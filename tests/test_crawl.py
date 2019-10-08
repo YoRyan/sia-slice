@@ -54,6 +54,15 @@ class BaseTestCases:
             await siaslice.crawl_and_mirror(self.afp, prior_map, mock_callback)
             mock_callback.assert_not_awaited()
 
+        async def test_offset_start(self):
+            prior_map = siaslice.BlockMap(
+                    block_size=self.block_size,
+                    md5_hashes=(['x']*3 + [self.blocks[3].md5_hash]))
+            mock_callback = asynctest.CoroutineMock()
+            await siaslice.crawl_and_mirror(
+                    self.afp, prior_map, mock_callback, start_block=2)
+            mock_callback.assert_called_once_with(2, self.blocks[2])
+
         async def tearDown(self):
             await self.afp.close()
 
@@ -89,3 +98,7 @@ class ZeroLengthTarget(asynctest.TestCase):
 
     async def tearDown(self):
         await self.afp.close()
+
+
+if __name__ == '__main__':
+    asynctest.main()
