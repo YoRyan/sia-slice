@@ -26,10 +26,9 @@ async def crawl_and_mirror(source_afp, prior_map, update_callback, start_block=0
         reader = aiofile.Reader(
                 source_afp, chunk_size=block_size, offset=start_block*block_size)
         async for chunk in reader:
-            md5_hash = (await aiomd5(chunk)).hexdigest()
-            lz_bytes = await aiolzc(chunk)
+            md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
             await read_queue.put(Block(
-                    md5_hash=md5_hash, compressed_bytes=lz_bytes))
+                    md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes))
         await read_queue.put(None) # end-of-read sentinel
     read_task = asyncio.create_task(read_worker())
 
