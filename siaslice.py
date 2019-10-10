@@ -68,10 +68,16 @@ async def do_sync(source_afp, siapath, last_map):
     start_block = len(last_map.md5_hashes)
 
 
-async def crawl_and_mirror(source_afp, prior_map, update_callback, start_block=0):
-    block_size = prior_map.block_size
 
+
+async def _rcb_noop(index, block):
+    pass
+
+async def read_changed_blocks(
+        source_afp, prior_block_map, start_block=0,
+        no_change_callback=_rcb_noop, change_callback=_rcb_noop):
     # Read, hash, and compress blocks in the background
+    block_size = prior_block_map.block_size
     read_queue = asyncio.Queue(maxsize=2)
     async def read_worker():
         reader = aiofile.Reader(
@@ -83,16 +89,18 @@ async def crawl_and_mirror(source_afp, prior_map, update_callback, start_block=0
         await read_queue.put(None) # end-of-read sentinel
     read_task = asyncio.create_task(read_worker())
 
-    # Dequeue blocks; if the prior hash doesn't match, update the block
+    # Dequeue blocks and detect changes
     index = start_block
     block = await read_queue.get()
     while block is not None:
         try:
-            prior_hash = prior_map.md5_hashes[index]
+            prior_hash = prior_block_map.md5_hashes[index]
         except IndexError:
             prior_hash = None
-        if prior_hash != block.md5_hash:
-            await update_callback(index, block)
+        if prior_hash == block.md5_hash:
+            await no_change_callback(index, block)
+        else:
+            await change_callback(index, block)
         index += 1
         block = await read_queue.get()
 
