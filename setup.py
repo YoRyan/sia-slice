@@ -8,7 +8,8 @@ setup(
     zip_safe=False,
     install_requires=[
         'aiofile',
-        'aioify'
+        'aioify',
+        'aiohttp'
     ],
     entry_points={
         'console_scripts': [

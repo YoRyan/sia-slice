@@ -19,54 +19,54 @@ class BaseTestCases:
                            async for chunk in reader]
 
         async def test_initial_upload(self):
-            prior_map = siaslice.BlockMap(block_size=self.block_size, md5_hashes=[])
-            mock_callback = asynctest.CoroutineMock()
-            await siaslice.read_changed_blocks(
-                    self.afp, prior_map, change_callback=mock_callback)
-            calls = [asynctest.call(i, block)
-                     for i, block in enumerate(self.blocks)]
-            mock_callback.assert_has_calls(calls)
+            prior_map = siaslice.BlockMap(
+                    block_size=self.block_size, md5_hashes=[])
+            async for index, block, change in siaslice.read_blocks(
+                    self.afp, prior_map, 0):
+                self.assertEqual(block, self.blocks[index])
+                self.assertTrue(change)
 
         async def test_all_change(self):
             prior_map = siaslice.BlockMap(
                     block_size=self.block_size, md5_hashes=['x']*4)
-            mock_callback = asynctest.CoroutineMock()
-            await siaslice.read_changed_blocks(
-                    self.afp, prior_map, change_callback=mock_callback)
-            calls = [asynctest.call(i, block)
-                     for i, block in enumerate(self.blocks)]
-            mock_callback.assert_has_calls(calls)
+            async for index, block, change in siaslice.read_blocks(
+                    self.afp, prior_map, 0):
+                self.assertEqual(block, self.blocks[index])
+                self.assertTrue(change)
 
         async def test_partial_change(self):
             prior_map = siaslice.BlockMap(
                     block_size=self.block_size,
                     md5_hashes=[self.blocks[0].md5_hash, 'x',
                                 'x', self.blocks[3].md5_hash])
-            mock_callback = asynctest.CoroutineMock()
-            await siaslice.read_changed_blocks(
-                    self.afp, prior_map, change_callback=mock_callback)
-            calls = [asynctest.call(1, self.blocks[1]),
-                     asynctest.call(2, self.blocks[2])]
-            mock_callback.assert_has_calls(calls)
+            async for index, block, change in siaslice.read_blocks(
+                    self.afp, prior_map, 0):
+                self.assertEqual(block, self.blocks[index])
+                if index == 1 or index == 2:
+                    self.assertTrue(change)
+                else:
+                    self.assertFalse(change)
 
         async def test_no_change(self):
             prior_map = siaslice.BlockMap(
                     block_size=self.block_size,
                     md5_hashes=[block.md5_hash for block in self.blocks])
-            mock_callback = asynctest.CoroutineMock()
-            await siaslice.read_changed_blocks(
-                    self.afp, prior_map, change_callback=mock_callback)
-            mock_callback.assert_not_awaited()
+            async for index, block, change in siaslice.read_blocks(
+                    self.afp, prior_map, 0):
+                self.assertEqual(block, self.blocks[index])
+                self.assertFalse(change)
 
         async def test_offset_start(self):
             prior_map = siaslice.BlockMap(
                     block_size=self.block_size,
                     md5_hashes=(['x']*3 + [self.blocks[3].md5_hash]))
-            mock_callback = asynctest.CoroutineMock()
-            await siaslice.read_changed_blocks(
-                    self.afp, prior_map, start_block=2,
-                    change_callback=mock_callback)
-            mock_callback.assert_called_once_with(2, self.blocks[2])
+            async for index, block, change in siaslice.read_blocks(
+                    self.afp, prior_map, 2):
+                self.assertEqual(block, self.blocks[index])
+                if index == 2:
+                    self.assertTrue(change)
+                else:
+                    self.assertFalse(change)
 
         async def tearDown(self):
             await self.afp.close()
@@ -96,10 +96,9 @@ class ZeroLengthTarget(asynctest.TestCase):
 
     async def test_zero_length(self):
         prior_map = siaslice.BlockMap(block_size=1024, md5_hashes=[])
-        mock_callback = asynctest.CoroutineMock()
-        await siaslice.read_changed_blocks(
-                self.afp, prior_map, change_callback=mock_callback)
-        mock_callback.assert_not_awaited()
+        async for index, block, change in siaslice.read_blocks(
+                self.afp, prior_map, 0):
+            self.fail('read a block from an empty file')
 
     async def tearDown(self):
         await self.afp.close()
