@@ -20,6 +20,7 @@ aiolzd = aioify(obj=lzma.decompress)
 
 BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
 Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
+SiadEndpoint = namedtuple('SiadEndpoint', ['domain', 'api_password'])
 
 DEFAULT_BLOCK_MB = 40
 USER_AGENT = 'Sia-Agent'
@@ -55,8 +56,10 @@ async def amain():
     else:
         start_block = 0
     siapath = args.siapath.split('/')
+    endpoint = SiadEndpoint(domain='http://localhost:9980',
+                            api_password=os.environ['SIAD_API'])
     async with aiofile.AIOFile(args.file, mode='rb') as source_afp:
-        await do_sia_sync(source_afp, siapath, last_map)
+        await do_sia_sync(endpoint, source_afp, siapath, last_map)
 
 
 async def read_map_file(afp):
@@ -70,8 +73,7 @@ async def read_map_file(afp):
 
 
 async def do_sia_sync(
-        source_afp, siapath, block_size,
-        start_block=0, endpoint='http://localhost:9980'):
+        endpoint, source_afp, siapath, block_size, start_block=0):
     # Retrieve the initial block map from Sia, if it exists.
     map_siapath = siapath + ['siaslice.map']
     map_response = await siad_get(endpoint, 'renter', 'stream', *map_siapath)
@@ -120,16 +122,18 @@ def save_map_file(block_map):
 
 
 async def siad_get(endpoint, *path, **qs):
-    url = f"{endpoint}/{'/'.join(path)}"
+    url = f"{endpoint.domain}/{'/'.join(path)}"
     headers = { 'User-Agent': USER_AGENT }
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(
+            auth=aiohttp.BasicAuth('', password=endpoint.api_password)) as session:
         return await session.get(url, params=qs, headers=headers)
 
 
 async def siad_post(endpoint, post_data, *path, **qs):
-    url = f"{endpoint}/{'/'.join(path)}"
+    url = f"{endpoint.domain}/{'/'.join(path)}"
     headers = { 'User-Agent': USER_AGENT }
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(
+            auth=aiohttp.BasicAuth('', password=endpoint.api_password)) as session:
         return await session.post(url, data=post_data, params=qs, headers=headers)
 
 
