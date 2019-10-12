@@ -125,7 +125,8 @@ async def siad_get(endpoint, *path, **qs):
     url = f"{endpoint.domain}/{'/'.join(path)}"
     headers = { 'User-Agent': USER_AGENT }
     async with aiohttp.ClientSession(
-            auth=aiohttp.BasicAuth('', password=endpoint.api_password)) as session:
+            auth=aiohttp.BasicAuth('', password=endpoint.api_password),
+            timeout=aiohttp.ClientTimeout(total=None)) as session:
         return await session.get(url, params=qs, headers=headers)
 
 
@@ -133,7 +134,8 @@ async def siad_post(endpoint, post_data, *path, **qs):
     url = f"{endpoint.domain}/{'/'.join(path)}"
     headers = { 'User-Agent': USER_AGENT }
     async with aiohttp.ClientSession(
-            auth=aiohttp.BasicAuth('', password=endpoint.api_password)) as session:
+            auth=aiohttp.BasicAuth('', password=endpoint.api_password),
+            timeout=aiohttp.ClientTimeout(total=None)) as session:
         return await session.post(url, data=post_data, params=qs, headers=headers)
 
 
