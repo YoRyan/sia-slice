@@ -36,6 +36,24 @@ class TestSiadOperations(asynctest.TestCase):
         await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
                            'siaslice_test_dir_abcd1234', action='delete')
 
+    async def test_read_block_map(self):
+        # Upload mock blocks.
+        await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
+                           'siaslice_test_dir_abcd1234', 'siaslice.40MiB.0.x.lz')
+        await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
+                           'siaslice_test_dir_abcd1234', 'siaslice.40MiB.1.y.lz')
+        await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
+                           'siaslice_test_dir_abcd1234', 'siaslice.40MiB.2.z.lz')
+
+        # Read the block map from the filenames.
+        block_map = await ss.siapath_block_map(ENDPOINT,
+                                               ('siaslice_test_dir_abcd1234',))
+        self.assertEqual(block_map.md5_hashes, ['x', 'y', 'z'])
+
+        # Clean up test directory.
+        await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
+                           'siaslice_test_dir_abcd1234', action='delete')
+
 
 if __name__ == '__main__':
     asynctest.main()

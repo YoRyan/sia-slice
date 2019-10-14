@@ -144,10 +144,10 @@ async def siapath_block_map(
     if response.status == 500: # nonexistent directory
         return BlockMap(block_size=fallback_block_size, md5_hashes=[])
     elif response.status == 200:
-        filenames = (meta['siapath'].split('/')[-1:]
+        filenames = (meta['siapath'].split('/')[-1:][0]
                      for meta in (await siad_json(response)).get('files', []))
         block_size = None
-        hashes = defaultlist('')
+        hashes = defaultlist(lambda: '')
         for filename in filenames:
             # Extract block size, index, and MD5 hash from filename.
             match = re.search(r'^siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz$',
@@ -162,8 +162,8 @@ async def siapath_block_map(
             elif block_size != filename_block_size:
                 raise ValueError(f'inconsistent block size: {filename} vs. '
                                  f'{siapath_block_size}MiB')
-            filename_index = int(filename_match.group(2))
-            filename_hash = filename_match.group(3)
+            filename_index = int(match.group(2))
+            filename_hash = match.group(3)
 
             # Duplicate block indices should never happen.
             if hashes[filename_index]:
