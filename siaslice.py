@@ -9,6 +9,7 @@ from argparse import ArgumentParser
 from collections import namedtuple
 from datetime import datetime
 from hashlib import md5
+from io import BytesIO
 
 from aioify import aioify
 from defaultlist import defaultlist
@@ -20,13 +21,13 @@ aiomd5 = aioify(obj=md5)
 aiolzc = aioify(obj=lzma.compress)
 aiolzd = aioify(obj=lzma.decompress)
 
-BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
-Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
-SiadEndpoint = namedtuple('SiadEndpoint', ['domain', 'api_password'])
-
 DEFAULT_BLOCK_MB = 40
 MAX_CONCURRENT_UPLOADS = 10
 USER_AGENT = 'Sia-Agent'
+
+BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
+Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
+SiadEndpoint = namedtuple('SiadEndpoint', ['domain', 'api_password'])
 
 class SiadError(Exception):
     def __init__(self, status, message):
@@ -66,9 +67,13 @@ async def amain():
             start_block = len(saved_block_map.md5_hashes)
     else:
         start_block = 0
-    siapath = args.siapath.split('/')
     endpoint = SiadEndpoint(domain='http://localhost:9980',
                             api_password=os.environ['SIAD_API'])
+    siapath_valid = (await siad_post(endpoint, b'', 'renter',
+                                     'validate', args.siapath)).status == 204
+    if not siapath_valid:
+        raise ValueError(f'invalid siapath: {args.siapath}')
+    siapath = args.siapath.split('/')
     async with aiofile.AIOFile(args.file, mode='rb') as source_afp:
         await do_sia_sync(endpoint, source_afp, siapath, last_map)
 
@@ -88,8 +93,8 @@ async def do_sia_sync(endpoint, source_afp, siapath, block_size, start_block=0):
                                         fallback_block_size=block_size)
     if prior_map.block_size != block_size:
         logging.warning(
-                f'block size mismatch - expected {block_size/1e3/1e3}MiB, found '
-                f'{prior_map.block_size/1e3/1e3}MiB; using the detected size')
+                f'block size mismatch - expected {format_bs(block_size)}, found '
+                f'{format_bs(prior_map.block_size)}; using the detected size')
         block_size = prior_map.block_size
 
     read_done = False
@@ -98,13 +103,16 @@ async def do_sia_sync(endpoint, source_afp, siapath, block_size, start_block=0):
     async def check_progress_worker():
         while not read_done or uploads != []:
             # Check upload status and mark complete uploads.
-            for upload in uploads:
-                upload_status = await siad_json(await siad_get(
+            async def is_done(upload):
+                status = await siad_json(await siad_get(
                         endpoint, 'renter', 'file', *upload))
-                if upload_status.get('uploadprogress', 0) >= 100:
-                    uploads.remove(upload)
-                    uploads_sem.release()
-            asyncio.sleep(30)
+                return status.get('uploadprogress', 0) >= 100
+            to_remove = [upload for upload in uploads.copy()
+                         if await is_done(upload)]
+            for upload in to_remove:
+                uploads.remove(upload)
+                uploads_sem.release()
+            await asyncio.sleep(30)
     check_progress_task = asyncio.create_task(check_progress_worker())
 
     timestamp = datetime.now().strftime('%Y%m%d-%H%M')
@@ -112,7 +120,7 @@ async def do_sia_sync(endpoint, source_afp, siapath, block_size, start_block=0):
         log_write = aiofile.Writer(log_afp)
 
         # Write log file header and already-processed blocks.
-        await log_write(f'{block_size/1e3/1e3}MiB\n')
+        await log_write(f'{format_bs(block_size)}\n')
         for index, md5_hash in enumerate(prior_map.md5_hashes):
             if index >= start_block:
                 break
@@ -123,11 +131,12 @@ async def do_sia_sync(endpoint, source_afp, siapath, block_size, start_block=0):
         async for index, block, change in read_blocks(source_afp, prior_map,
                                                       start_block):
             if change:
-                block_siapath = \
-                        siapath + (f'siaslice.{block_size/1e3/1e3}MiB.{index}.lz',)
+                filename = ('siaslice.'
+                            f'{format_bs(block_size)}.{index}.{block.md5_hash}.lz')
+                block_siapath = siapath + (filename,)
                 async with uploads_sem:
                     await siapath_delete_block(endpoint, siapath, index)
-                    await siad_post(endpoint, block.compressed_bytes,
+                    await siad_post(endpoint, BytesIO(block.compressed_bytes),
                                     'renter', 'uploadstream', *block_siapath)
                     uploads.append(block_siapath)
             await log_write(f'{block.md5_hash}\n')
@@ -136,6 +145,11 @@ async def do_sia_sync(endpoint, source_afp, siapath, block_size, start_block=0):
     read_done = True
     await check_progress_task
     os.remove(log_file)
+
+
+def format_bs(block_size):
+    n = int(block_size/1e3/1e3)
+    return f'{n}MiB'
 
 
 async def siapath_block_map(

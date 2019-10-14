@@ -1,7 +1,9 @@
+import lzma
 import os
 import re
 
 import asynctest
+from aiofile import AIOFile
 
 import siaslice as ss
 
@@ -17,27 +19,22 @@ class UploadAndDownloadAndDelete(asynctest.TestCase):
 class TestSiadOperations(asynctest.TestCase):
 
     async def test_delete_block(self):
-        # Upload mock block 69.
         await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
                            'siaslice_test_dir_abcd1234', 'siaslice.40MiB.69.x.lz')
         await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
                            'siaslice_test_dir_abcd1234', 'siaslice.1MiB.69.x.lz')
 
-        # Delete block 69.
         await ss.siapath_delete_block(
                 ENDPOINT, ('siaslice_test_dir_abcd1234',), 69)
 
-        # Check for empty directory.
         response = await ss.siad_json(await ss.siad_get(
                 ENDPOINT, 'renter', 'dir', 'siaslice_test_dir_abcd1234'))
         self.assertEqual(response['files'], [])
 
-        # Clean up test directory.
         await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
                            'siaslice_test_dir_abcd1234', action='delete')
 
     async def test_read_block_map(self):
-        # Upload mock blocks.
         await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
                            'siaslice_test_dir_abcd1234', 'siaslice.40MiB.0.x.lz')
         await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
@@ -45,12 +42,26 @@ class TestSiadOperations(asynctest.TestCase):
         await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
                            'siaslice_test_dir_abcd1234', 'siaslice.40MiB.2.z.lz')
 
-        # Read the block map from the filenames.
         block_map = await ss.siapath_block_map(ENDPOINT,
                                                ('siaslice_test_dir_abcd1234',))
         self.assertEqual(block_map.md5_hashes, ['x', 'y', 'z'])
 
-        # Clean up test directory.
+        await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
+                           'siaslice_test_dir_abcd1234', action='delete')
+
+    async def test_sia_sync_1_block(self):
+        async with AIOFile('40MiB.img', 'rb') as source_afp:
+            reference_bytes = await source_afp.read()
+            await ss.do_sia_sync(ENDPOINT, source_afp,
+                                 ('siaslice_test_dir_abcd1234',), 40*1000*1000)
+
+        response = await ss.siad_get(
+                ENDPOINT, 'renter', 'stream',
+                ('siaslice_test_dir_abcd1234',
+                 'siaslice.40MiB.0.881213b3fb0843574998151fb23cf12a.lz'))
+        uploaded_bytes = lzma.decompress(await response.read())
+        self.assertEqual(uploaded_bytes, reference_bytes)
+
         await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
                            'siaslice_test_dir_abcd1234', action='delete')
 
