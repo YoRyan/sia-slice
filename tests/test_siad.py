@@ -38,3 +38,7 @@ class PostRequest(asynctest.TestCase):
         self.assertEqual(response.status, 400)
         self.assertIn('message', await response.json())
 
+
+if __name__ == '__main__':
+    asynctest.main()
+

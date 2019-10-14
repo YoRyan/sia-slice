@@ -106,3 +106,4 @@ class ZeroLengthTarget(asynctest.TestCase):
 
 if __name__ == '__main__':
     asynctest.main()
+

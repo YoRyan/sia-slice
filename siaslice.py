@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
+import logging
 import lzma
 import os
 import re
@@ -10,6 +11,7 @@ from datetime import datetime
 from hashlib import md5
 
 from aioify import aioify
+from defaultlist import defaultlist
 import aiofile
 import aiohttp
 
@@ -23,7 +25,16 @@ Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
 SiadEndpoint = namedtuple('SiadEndpoint', ['domain', 'api_password'])
 
 DEFAULT_BLOCK_MB = 40
+MAX_CONCURRENT_UPLOADS = 10
 USER_AGENT = 'Sia-Agent'
+
+class SiadError(Exception):
+    def __init__(self, status, message):
+        super().__init__(self)
+        self.status = status
+        self.message = message
+    def __str__(self):
+        return f'<[{status}] {message}>'
 
 
 def main(*arg, **kwarg):
@@ -38,8 +49,8 @@ async def amain():
             help='resume a stalled sync operation using the log file')
     argp_xfer.add_argument(
             '-b', '--block-size', dest='mb', type=int, default=DEFAULT_BLOCK_MB,
-            help='divide the file into chunks of MB megabytes (once set, cannot '
-                 + f'be changed; defaults to {DEFAULT_BLOCK_MB}MB)')
+            help='divide the file into chunks of MiB megabytes (once set, cannot '
+                 + f'be changed; defaults to {DEFAULT_BLOCK_MB}MiB)')
     argp.add_argument(
             'file', help='the file to upload to Sia')
     argp.add_argument(
@@ -64,61 +75,120 @@ async def amain():
 
 async def read_map_file(afp):
     block_line = await afp.readline()
-    block_match = re.search(r'^([0-9]+)M$', block_line)
-    if block_match is None:
+    block_match = re.search(r'^([0-9]+)MiB$', block_line)
+    if not block_match:
         raise ValueError(f'invalid block size: {block_line}')
-    block_size = int(block_match.group(1))*1024*1024
+    block_size = int(block_match.group(1))*1e3*1e3
     md5_hashes = [line async for line in afp]
     return BlockMap(block_size=block_size, md5_hashes=md5_hashes)
 
 
-async def do_sia_sync(
-        endpoint, source_afp, siapath, block_size, start_block=0):
-    # Retrieve the initial block map from Sia, if it exists.
-    map_siapath = siapath + ['siaslice.map']
-    map_response = await siad_get(endpoint, 'renter', 'stream', *map_siapath)
-    if True:
-        prior_map = read_map_file(map_response.content)
-        assert prior_map.block_size == block_size
-    else:
-        prior_map = BlockMap(block_size=block_size, md5_hashes=[])
+async def do_sia_sync(endpoint, source_afp, siapath, block_size, start_block=0):
+    prior_map = await siapath_block_map(endpoint, siapath,
+                                        fallback_block_size=block_size)
+    if prior_map.block_size != block_size:
+        logging.warning(
+                f'block size mismatch - expected {block_size/1e3/1e3}MiB, found '
+                f'{prior_map.block_size/1e3/1e3}MiB; using the detected size')
+        block_size = prior_map.block_size
 
-    # Start reading blocks; write to the log file.
-    current_map = prior_map.copy()
+    read_done = False
+    uploads = []
+    uploads_sem = asyncio.BoundedSemaphore(value=MAX_CONCURRENT_UPLOADS)
+    async def check_progress_worker():
+        while not read_done or uploads != []:
+            # Check upload status and mark complete uploads.
+            for upload in uploads:
+                upload_status = await siad_json(await siad_get(
+                        endpoint, 'renter', 'file', *upload))
+                if upload_status.get('uploadprogress', 0) >= 100:
+                    uploads.remove(upload)
+                    uploads_sem.release()
+            asyncio.sleep(30)
+    check_progress_task = asyncio.create_task(check_progress_worker())
+
     timestamp = datetime.now().strftime('%Y%m%d-%H%M')
-    log_file = f'siaslice-{timestamp}.log'
-    async for index, block, change in read_blocks(
-            source_afp, prior_map, start_block):
-        try:
-            current_map.md5_hashes[index] = block.md5_hash
-        except IndexError:
-            assert index == len(current_map.md5_hashes)
-            current_map.md5_hashes.append(block.md5_hash)
-        current_map_bytes = save_map_file(current_map)
+    async with aiofile.AIOFile(f'siaslice-{timestamp}.log', 'wt') as log_afp:
+        log_write = aiofile.Writer(log_afp)
 
-        if change:
-            # Upload new block to Sia.
-            block_siapath = siapath + [f'siaslice.lz.{index}']
-            await siad_post(
-                    endpoint, block.compressed_bytes,
-                    'renter', 'uploadstream', *block_siapath, force='')
-            # Upload new map file to Sia (do this every time to stay consistent).
-            await siad_post(
-                    endpoint, current_map_bytes,
-                    'renter', 'uploadstream', *map_siapath, force='')
+        # Write log file header and already-processed blocks.
+        await log_write(f'{block_size/1e3/1e3}MiB\n')
+        for index, md5_hash in enumerate(prior_map.md5_hashes):
+            if index >= start_block:
+                break
+            else:
+                await log_write(f'{md5_hash}\n')
 
-        async with aiofile.AIOFile(log_file, 'wt'):
-            writer = aiofile.Writer(source_afp)
-            await writer(current_map_bytes)
+        # Read and upload blocks.
+        async for index, block, change in read_blocks(source_afp, prior_map,
+                                                      start_block):
+            if change:
+                block_siapath = \
+                        siapath + (f'siaslice.{block_size/1e3/1e3}MiB.{index}.lz',)
+                async with uploads_sem:
+                    await siapath_delete_block(endpoint, siapath, index)
+                    await siad_post(endpoint, block.compressed_bytes,
+                                    'renter', 'uploadstream', *block_siapath)
+                    uploads.append(block_siapath)
+            await log_write(f'{block.md5_hash}\n')
 
+    # Clean up.
+    read_done = True
+    await check_progress_task
     os.remove(log_file)
 
 
-def save_map_file(block_map):
-    binary = f'{block_map.block_size}MB\n'.encode()
-    for md5_hash in block_map.md5_hashes:
-        binary += f'{md5_hash}\n'.encode()
-    return binary
+async def siapath_block_map(
+        endpoint, siapath, fallback_block_size=DEFAULT_BLOCK_MB*1e3*1e3):
+    response = await siad_get(endpoint, 'renter', 'dir', *siapath)
+    if response.status == 500: # nonexistent directory
+        return BlockMap(block_size=fallback_block_size, md5_hashes=[])
+    elif response.status == 200:
+        filenames = (meta['siapath'].split('/')[-1:]
+                     for meta in (await siad_json(response)).get('files', []))
+        block_size = None
+        hashes = defaultlist('')
+        for filename in filenames:
+            # Extract block size, index, and MD5 hash from filename.
+            match = re.search(r'^siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz$',
+                              filename)
+            if not match:
+                continue
+            filename_block_size = int(match.group(1))*1e3*1e3
+            if not block_size:
+                if filename_block_size <= 0:
+                    raise ValueError(f'invalid block size: {filename}')
+                block_size = filename_block_size
+            elif block_size != filename_block_size:
+                raise ValueError(f'inconsistent block size: {filename} vs. '
+                                 f'{siapath_block_size}MiB')
+            filename_index = int(filename_match.group(2))
+            filename_hash = filename_match.group(3)
+
+            # Duplicate block indices should never happen.
+            if hashes[filename_index]:
+                raise IndexError(f'duplicate block: {filename}')
+            hashes[filename_index] = filename_hash
+
+        return BlockMap(block_size=block_size, md5_hashes=hashes)
+    else:
+        raise ValueError(f"{'/'.join(siapath)} is a file, not a directory")
+
+
+async def siapath_delete_block(endpoint, siapath, block_index):
+    response = await siad_get(endpoint, 'renter', 'dir', *siapath)
+    if response.status == 500: # nonexistent directory
+        pass
+    elif response.status == 200:
+        paths = (meta['siapath']
+                 for meta in (await siad_json(response)).get('files', []))
+        for path in paths:
+            match = re.search(rf'siaslice\.\d+MiB\.{block_index}\.[a-z\d]+\.lz$',
+                              path)
+            if match:
+                await siad_post(endpoint, b'', 'renter', 'delete', *path.split('/'))
+    else:
+        raise ValueError(f"{'/'.join(siapath)} is a file, not a directory")
 
 
 async def siad_get(endpoint, *path, **qs):
@@ -139,36 +209,31 @@ async def siad_post(endpoint, post_data, *path, **qs):
         return await session.post(url, data=post_data, params=qs, headers=headers)
 
 
-async def read_blocks(source_afp, prior_block_map, start_block):
-    # Read, hash, and compress blocks in the background.
-    block_size = prior_block_map.block_size
-    read_queue = asyncio.Queue(maxsize=2)
-    async def read_worker():
-        reader = aiofile.Reader(
-                source_afp, chunk_size=block_size, offset=start_block*block_size)
-        async for chunk in reader:
-            md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
-            await read_queue.put(Block(
-                    md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes))
-        await read_queue.put(None) # end-of-read sentinel
-    read_task = asyncio.create_task(read_worker())
+async def siad_json(response):
+    json = await response.json()
+    status = response.status
+    if (status >= 400 and status <= 499) or (status >= 500 and status <= 599):
+        raise SiadError(status, json.get('message'))
+    return json
 
-    # Dequeue blocks and detect changes.
+
+async def read_blocks(source_afp, prior_block_map, start_block):
+    block_size = prior_block_map.block_size
     index = start_block
-    block = await read_queue.get()
-    while block is not None:
+    reader = aiofile.Reader(
+            source_afp, chunk_size=block_size, offset=start_block*block_size)
+    async for chunk in reader:
+        md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
+        block = Block(md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes)
         try:
             prior_hash = prior_block_map.md5_hashes[index]
         except IndexError:
             prior_hash = ''
-
         block_changed = prior_hash != block.md5_hash
         yield (index, block, block_changed)
-
         index += 1
-        block = await read_queue.get()
-    read_task.cancel()
 
 
 if __name__ == '__main__':
     main()
+
