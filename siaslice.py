@@ -44,38 +44,45 @@ def main(*arg, **kwarg):
 async def amain():
     argp = ArgumentParser(
             description='Sync a large file to Sia with incremental updates.')
-    argp_xfer = argp.add_mutually_exclusive_group()
-    argp_xfer.add_argument(
-            '-r', '--resume', dest='logfile',
-            help='resume a stalled sync operation using the log file')
-    argp_xfer.add_argument(
-            '-b', '--block-size', dest='mb', type=int, default=DEFAULT_BLOCK_MB,
-            help='divide the file into chunks of MiB megabytes (once set, cannot '
-                 + f'be changed; defaults to {DEFAULT_BLOCK_MB}MiB)')
+    argp_op = argp.add_mutually_exclusive_group(required=True)
+    argp_op.add_argument(
+            '-m', '--mirror', dest='mb', const='40', type=int, nargs='?',
+            help=('sync a copy to Sia by dividing the file into chunks '
+                  f'of MB megabytes (default {DEFAULT_BLOCK_MB}MiB; cannot be '
+                  'changed after the initial upload)'))
+    argp_op.add_argument('-d', '--download', action='store_true',
+                         help='reconstruct a copy using Sia')
+    argp_op.add_argument(
+            '-r', '--resume', action='store_true',
+            help='resume a stalled operation with the provided log file')
+    argp.add_argument('file', help=('file target for uploads, source for '
+                                    'downloads, or log to resume from'))
     argp.add_argument(
-            'file', help='the file to upload to Sia')
-    argp.add_argument(
-            'siapath',
-            help='the file will be stored as a directory at this Sia location')
+            'siapath', nargs='?',
+            help='Sia directory target for uploads or source for downloads')
     args = argp.parse_args()
 
-    if args.logfile:
-        # (Currently we don't do anything with the log file except locate the
-        #  last successfully transferred block.)
-        with aiofile.AIOFile(args.logfile, 'rt') as log_afp:
-            saved_block_map = await read_map_file(aiofile.Reader(log_afp))
-            start_block = len(saved_block_map.md5_hashes)
-    else:
-        start_block = 0
     endpoint = SiadEndpoint(domain='http://localhost:9980',
                             api_password=os.environ['SIAD_API'])
-    siapath_valid = (await siad_post(endpoint, b'', 'renter',
-                                     'validate', args.siapath)).status == 204
-    if not siapath_valid:
-        raise ValueError(f'invalid siapath: {args.siapath}')
-    siapath = args.siapath.split('/')
-    async with aiofile.AIOFile(args.file, mode='rb') as source_afp:
-        await do_sia_sync(endpoint, source_afp, siapath, last_map)
+    if args.mb:
+        if not args.siapath:
+            raise ValueError('no siapath specified')
+        siapath_valid = (await siad_post(
+                endpoint, b'', 'renter', 'validate', args.siapath)).status == 204
+        if not siapath_valid:
+            raise ValueError(f'invalid siapath: {args.siapath}')
+
+        siapath = args.siapath.split('/')
+        async with aiofile.AIOFile(args.file, mode='rb') as source_afp:
+            await do_sia_sync(endpoint, source_afp, siapath, args.mb*1e3*1e3)
+    elif args.download:
+        pass
+    elif args.resume:
+        # (Currently we don't do anything with the log file except locate the
+        #  last successfully transferred block.)
+        with aiofile.AIOFile(args.file, 'rt') as log_afp:
+            saved_block_map = await read_map_file(aiofile.Reader(log_afp))
+            start_block = len(saved_block_map.md5_hashes)
 
 
 async def read_map_file(afp):
