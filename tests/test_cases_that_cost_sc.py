@@ -50,10 +50,11 @@ class TestSiadOperations(asynctest.TestCase):
                            'siaslice_test_dir_abcd1234', action='delete')
 
     async def test_sia_sync_1_block(self):
+        prior_map = ss.BlockMap(block_size=40*1000*1000, md5_hashes=[])
         async with AIOFile('40MiB.img', 'rb') as source_afp:
             reference_bytes = await source_afp.read()
-            await ss.do_sia_sync(ENDPOINT, source_afp,
-                                 ('siaslice_test_dir_abcd1234',), 40*1000*1000)
+            await ss.do_sia_mirror(ENDPOINT, source_afp,
+                                   ('siaslice_test_dir_abcd1234',), prior_map)
 
         response = await ss.siad_get(
                 ENDPOINT, 'renter', 'stream',

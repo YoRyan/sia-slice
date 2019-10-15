@@ -4,6 +4,7 @@ import asyncio
 import logging
 import lzma
 import os
+import pickle
 import re
 from argparse import ArgumentParser
 from collections import namedtuple
@@ -28,6 +29,7 @@ USER_AGENT = 'Sia-Agent'
 BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
 Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
 SiadEndpoint = namedtuple('SiadEndpoint', ['domain', 'api_password'])
+MirrorStatus = namedtuple('MirrorStatus', ['uploads', 'current_index'])
 
 class SiadError(Exception):
     def __init__(self, status, message):
@@ -54,9 +56,9 @@ async def amain():
                          help='reconstruct a copy using Sia')
     argp_op.add_argument(
             '-r', '--resume', action='store_true',
-            help='resume a stalled operation with the provided log file')
+            help='resume a stalled operation with the provided state file')
     argp.add_argument('file', help=('file target for uploads, source for '
-                                    'downloads, or log to resume from'))
+                                    'downloads, or state to resume from'))
     argp.add_argument(
             'siapath', nargs='?',
             help='Sia directory target for uploads or source for downloads')
@@ -71,92 +73,101 @@ async def amain():
                 endpoint, b'', 'renter', 'validate', args.siapath)).status == 204
         if not siapath_valid:
             raise ValueError(f'invalid siapath: {args.siapath}')
-
         siapath = args.siapath.split('/')
-        async with aiofile.AIOFile(args.file, mode='rb') as source_afp:
-            await do_sia_sync(endpoint, source_afp, siapath, args.mb*1e3*1e3)
+        await do_mirror(endpoint, args.file, siapath, block_size=args.mb)
     elif args.download:
         pass
     elif args.resume:
-        # (Currently we don't do anything with the log file except locate the
-        #  last successfully transferred block.)
-        with aiofile.AIOFile(args.file, 'rt') as log_afp:
-            saved_block_map = await read_map_file(aiofile.Reader(log_afp))
-            start_block = len(saved_block_map.md5_hashes)
+        with aiofile.AIOFile(args.file, 'rb') as status_afp:
+            status_pickle = pickle.loads(await status_afp.read())
+        if 'siaslice-mirror' in args.file:
+            await do_mirror(
+                    endpoint, status_pickle['source_file'], status_pickle['siapath'],
+                    block_size=status_pickle['block_size'],
+                    start_block=status_pickle['current_index'])
+        elif 'siaslice-download' in args.file:
+            pass
+        else:
+            raise ValueError(f'bad state file: {args.file}')
 
 
-async def read_map_file(afp):
-    block_line = await afp.readline()
-    block_match = re.search(r'^([0-9]+)MiB$', block_line)
-    if not block_match:
-        raise ValueError(f'invalid block size: {block_line}')
-    block_size = int(block_match.group(1))*1e3*1e3
-    md5_hashes = [line async for line in afp]
-    return BlockMap(block_size=block_size, md5_hashes=md5_hashes)
-
-
-async def do_sia_sync(endpoint, source_afp, siapath, block_size, start_block=0):
+async def do_mirror(endpoint, source_file, siapath,
+                    block_size=DEFAULT_BLOCK_MB*1e3*1e3, start_block=0):
     prior_map = await siapath_block_map(endpoint, siapath,
                                         fallback_block_size=block_size)
     if prior_map.block_size != block_size:
-        logging.warning(
-                f'block size mismatch - expected {format_bs(block_size)}, found '
-                f'{format_bs(prior_map.block_size)}; using the detected size')
-        block_size = prior_map.block_size
+        raise ValueError(
+                f'block size mismatch: expected {format_bs(block_size)}, '
+                f'found {format_bs(prior_map.block_size)}')
 
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M')
+    status_file = f'siaslice-mirror-{timestamp}.dat'
+    async with aiofile.AIOFile(status_file, 'wb') as status_afp:
+        async with aiofile.AIOFile(source_file, mode='rb') as source_afp:
+            status_queue = asyncio.Queue(maxsize=1)
+            sync_task = asyncio.create_task(do_sia_mirror(
+                    endpoint, source_afp, prior_map,
+                    status_queue=status_queue, start_block=start_block))
+
+            status = await status_queue.get()
+            while status is not None:
+                status_pickle = {'source_file': source_file,
+                                 'siapath': siapath,
+                                 'block_size': block_size,
+                                 'current_index': status.current_index}
+                await status_afp.write(pickle.dumps(status_pickle))
+                status = await status_queue.get()
+            await sync_task
+    os.remove(status_file)
+
+
+async def do_sia_mirror(endpoint, source_afp, siapath, prior_map,
+                        status_queue=asyncio.Queue(), start_block=0):
+    status = MirrorStatus(uploads=[], current_index=start_block)
     read_done = False
     uploads = []
     uploads_sem = asyncio.BoundedSemaphore(value=MAX_CONCURRENT_UPLOADS)
     async def check_progress_worker():
         while not read_done or uploads != []:
             # Check upload status and mark complete uploads.
-            async def is_done(upload):
-                status = await siad_json(await siad_get(
+            async def upload_status(upload):
+                return await siad_json(await siad_get(
                         endpoint, 'renter', 'file', *upload))
-                return status.get('uploadprogress', 0) >= 100
-            to_remove = [upload for upload in uploads.copy()
-                         if await is_done(upload)]
-            for upload in to_remove:
-                uploads.remove(upload)
+            progress = {index: ((await upload_status(siapath))
+                                .get('uploadprogress', 0))
+                        for index, siapath in uploads}
+            to_remove = ((index, siapath) for index, siapath in uploads.copy()
+                         if progress[index] >= 100)
+            for index, siapath in to_remove:
+                uploads.remove((index, siapath))
                 uploads_sem.release()
+
+            status = MirrorStatus(
+                    uploads=[(index, progress[index]) for index, siapath in uploads],
+                    current_index=status.current_index)
+            await status_queue.put(status) # status update
+
             await asyncio.sleep(30)
     check_progress_task = asyncio.create_task(check_progress_worker())
 
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M')
-    async with aiofile.AIOFile(f'siaslice-{timestamp}.log', 'wt') as log_afp:
-        log_write = aiofile.Writer(log_afp)
+    # Read and upload blocks.
+    async for index, block, change in read_blocks(source_afp,
+                                                  prior_map, start_block):
+        status = MirrorStatus(uploads=status.uploads, current_index=index)
+        await status_queue.put(status) # status update
 
-        # Write log file header and already-processed blocks.
-        await log_write(f'{format_bs(block_size)}\n')
-        for index, md5_hash in enumerate(prior_map.md5_hashes):
-            if index >= start_block:
-                break
-            else:
-                await log_write(f'{md5_hash}\n')
-
-        # Read and upload blocks.
-        async for index, block, change in read_blocks(source_afp, prior_map,
-                                                      start_block):
-            if change:
-                filename = ('siaslice.'
-                            f'{format_bs(block_size)}.{index}.{block.md5_hash}.lz')
-                block_siapath = siapath + (filename,)
-                async with uploads_sem:
-                    await siapath_delete_block(endpoint, siapath, index)
-                    await siad_post(endpoint, BytesIO(block.compressed_bytes),
-                                    'renter', 'uploadstream', *block_siapath)
-                    uploads.append(block_siapath)
-            await log_write(f'{block.md5_hash}\n')
-
-    # Clean up.
+        if change:
+            filename = ('siaslice.'
+                        f'{format_bs(block_size)}.{index}.{block.md5_hash}.lz')
+            block_siapath = siapath + (filename,)
+            async with uploads_sem:
+                await siapath_delete_block(endpoint, siapath, index)
+                await siad_post(endpoint, BytesIO(block.compressed_bytes),
+                                'renter', 'uploadstream', *block_siapath)
+                uploads.append((index, block_siapath))
     read_done = True
     await check_progress_task
-    os.remove(log_file)
-
-
-def format_bs(block_size):
-    n = int(block_size/1e3/1e3)
-    return f'{n}MiB'
+    await status_queue.put(None) # end-of-operation sentinel
 
 
 async def siapath_block_map(
@@ -182,7 +193,7 @@ async def siapath_block_map(
                 block_size = filename_block_size
             elif block_size != filename_block_size:
                 raise ValueError(f'inconsistent block size: {filename} vs. '
-                                 f'{siapath_block_size}MiB')
+                                 f'{format_bs(siapath_block_size)}MiB')
             filename_index = int(match.group(2))
             filename_hash = match.group(3)
 
@@ -194,6 +205,11 @@ async def siapath_block_map(
         return BlockMap(block_size=block_size, md5_hashes=hashes)
     else:
         raise ValueError(f"{'/'.join(siapath)} is a file, not a directory")
+
+
+def format_bs(block_size):
+    n = int(block_size/1e3/1e3)
+    return f'{n}MiB'
 
 
 async def siapath_delete_block(endpoint, siapath, block_index):
