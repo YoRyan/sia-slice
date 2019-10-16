@@ -294,29 +294,31 @@ async def siad_json(response):
 
 
 async def run_all_tasks(generator, max_concurrent=0):
-    state = {'complete': asyncio.Event(), 'running': 0,
-             'sem': asyncio.BoundedSemaphore(value=max_concurrent)}
-    async def run_task(the_cor, state):
+    sem = asyncio.BoundedSemaphore(value=max_concurrent)
+    running = 0
+    complete = asyncio.Event()
+    async def run_task(the_cor):
+        nonlocal running, sem, complete
         await the_cor
-        state['running'] -= 1
-        state['sem'].release()
-        state['complete'].set()
+        running -= 1
+        sem.release()
+        complete.set()
     if isinstance(generator, GeneratorType):
         for cor in generator:
-            await state['sem'].acquire()
-            state['running'] += 1
-            asyncio.create_task(run_task(cor, state))
+            await sem.acquire()
+            running += 1
+            asyncio.create_task(run_task(cor))
     elif isinstance(generator, AsyncGeneratorType):
         async for cor in generator:
-            await state['sem'].acquire()
-            state['running'] += 1
-            asyncio.create_task(run_task(cor, state))
+            await sem.acquire()
+            running += 1
+            asyncio.create_task(run_task(cor))
     else:
         raise ValueError(f'not a generator: {generator}')
 
-    while state['running'] > 0:
-        await state['complete'].wait()
-        state['complete'].clear()
+    while running > 0:
+        await complete.wait()
+        complete.clear()
 
 
 if __name__ == '__main__':
