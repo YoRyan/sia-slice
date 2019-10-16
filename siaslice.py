@@ -82,14 +82,16 @@ async def amain():
         await do_download(endpoint, args.file, await siapath())
     elif args.resume:
         with aiofile.AIOFile(args.file, 'rb') as state_afp:
-            status_pickle = pickle.loads(await state_afp.read())
+            state_pickle = pickle.loads(await state_afp.read())
         if 'siaslice-mirror' in args.file:
             await do_mirror(
-                    endpoint, status_pickle['source_file'], status_pickle['siapath'],
-                    block_size=status_pickle['block_size'],
-                    start_block=status_pickle['current_index'])
+                    endpoint, state_pickle['source_file'], state_pickle['siapath'],
+                    block_size=state_pickle['block_size'],
+                    start_block=state_pickle['current_index'])
         elif 'siaslice-download' in args.file:
-            pass
+            await do_download(
+                    endpoint, state_pickle['target_file'], state_pickle['siapath'],
+                    start_block=state_pickle['start_block'])
         else:
             raise ValueError(f'bad state file: {args.file}')
 
