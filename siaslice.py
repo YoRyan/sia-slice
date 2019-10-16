@@ -35,11 +35,12 @@ MirrorStatus = namedtuple('MirrorStatus', ['uploads', 'current_index'])
 
 class SiadError(Exception):
     def __init__(self, status, message):
-        super().__init__(self)
         self.status = status
         self.message = message
     def __str__(self):
-        return f'<[{status}] {message}>'
+        return f'<Sia: [{self.status}] {self.message}>'
+    def __repr__(self):
+        return self.__str__()
 
 
 def main(*arg, **kwarg):
