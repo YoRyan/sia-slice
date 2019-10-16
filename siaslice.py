@@ -11,6 +11,8 @@ from collections import namedtuple
 from datetime import datetime
 from hashlib import md5
 from io import BytesIO
+from lzma import compress, LZMADecompressor
+from types import AsyncGeneratorType, GeneratorType
 
 from aioify import aioify
 from defaultlist import defaultlist
@@ -19,11 +21,11 @@ import aiohttp
 
 
 aiomd5 = aioify(obj=md5)
-aiolzc = aioify(obj=lzma.compress)
-aiolzd = aioify(obj=lzma.decompress)
+aiolzc = aioify(obj=compress)
 
 DEFAULT_BLOCK_MB = 40
-MAX_CONCURRENT_UPLOADS = 10
+MAX_CONCURRENT_UPLOADS = 20
+MAX_CONCURRENT_DOWNLOADS = 10
 USER_AGENT = 'Sia-Agent'
 
 BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
@@ -42,6 +44,7 @@ class SiadError(Exception):
 
 def main(*arg, **kwarg):
     asyncio.run(amain(*arg, **kwarg))
+
 
 async def amain():
     argp = ArgumentParser(
@@ -66,17 +69,18 @@ async def amain():
 
     endpoint = SiadEndpoint(domain='http://localhost:9980',
                             api_password=os.environ['SIAD_API'])
-    if args.mb:
+    async def siapath():
         if not args.siapath:
             raise ValueError('no siapath specified')
         siapath_valid = (await siad_post(
                 endpoint, b'', 'renter', 'validate', args.siapath)).status == 204
         if not siapath_valid:
             raise ValueError(f'invalid siapath: {args.siapath}')
-        siapath = args.siapath.split('/')
-        await do_mirror(endpoint, args.file, siapath, block_size=args.mb)
+        return args.siapath.split('/')
+    if args.mb:
+        await do_mirror(endpoint, args.file, await siapath(), block_size=args.mb)
     elif args.download:
-        pass
+        await do_download(endpoint, args.file, await siapath())
     elif args.resume:
         with aiofile.AIOFile(args.file, 'rb') as status_afp:
             status_pickle = pickle.loads(await status_afp.read())
@@ -105,7 +109,7 @@ async def do_mirror(endpoint, source_file, siapath,
     async with aiofile.AIOFile(status_file, 'wb') as status_afp:
         async with aiofile.AIOFile(source_file, mode='rb') as source_afp:
             status_queue = asyncio.Queue(maxsize=1)
-            sync_task = asyncio.create_task(do_sia_mirror(
+            sync_task = asyncio.create_task(siapath_mirror(
                     endpoint, source_afp, prior_map,
                     status_queue=status_queue, start_block=start_block))
 
@@ -121,53 +125,91 @@ async def do_mirror(endpoint, source_file, siapath,
     os.remove(status_file)
 
 
-async def do_sia_mirror(endpoint, source_afp, siapath, prior_map,
-                        status_queue=asyncio.Queue(), start_block=0):
-    status = MirrorStatus(uploads=[], current_index=start_block)
-    read_done = False
-    uploads = []
-    uploads_sem = asyncio.BoundedSemaphore(value=MAX_CONCURRENT_UPLOADS)
-    async def check_progress_worker():
-        while not read_done or uploads != []:
-            # Check upload status and mark complete uploads.
-            async def upload_status(upload):
-                return await siad_json(await siad_get(
-                        endpoint, 'renter', 'file', *upload))
-            progress = {index: ((await upload_status(siapath))
-                                .get('uploadprogress', 0))
-                        for index, siapath in uploads}
-            to_remove = ((index, siapath) for index, siapath in uploads.copy()
-                         if progress[index] >= 100)
-            for index, siapath in to_remove:
-                uploads.remove((index, siapath))
-                uploads_sem.release()
+async def siapath_mirror(endpoint, source_afp, siapath, prior_map,
+                         status_queue=asyncio.Queue(), start_block=0):
+    status = {'uploads': {}, 'current_index': 0}
+    async def push_status():
+        await status_queue.put(MirrorStatus(uploads=status['uploads'],
+                                            current_index=status['current_index']))
 
-            status = MirrorStatus(
-                    uploads=[(index, progress[index]) for index, siapath in uploads],
-                    current_index=status.current_index)
-            await status_queue.put(status) # status update
+    async def upload(index, block):
+        up_siapath = siapath + (f'siaslice.{format_bs(prior_map.block_size)}.'
+                                f'{index}.{block.md5_hash}.lz',)
+        await siapath_delete_block(endpoint, siapath, index)
+        await siad_post(endpoint, BytesIO(block.compressed_bytes),
+                        'renter', 'uploadstream', *up_siapath)
+        up_status = {}
+        while not up_status.get('recoverable', False):
+            up_status = (await siad_json(await siad_get(
+                    endpoint, 'renter', 'file', *up_siapath))).get('file', {})
+            status['uploads'][index] = up_status.get('uploadprogress', 0)
+            await push_status()
+            await asyncio.sleep(10)
+        else:
+            del status['uploads'][index]
+            await push_status()
 
-            await asyncio.sleep(30)
-    check_progress_task = asyncio.create_task(check_progress_worker())
+    async def read():
+        async for index, block, change in read_blocks(
+                source_afp, prior_map, start_block):
+            status['current_index'] = index
+            await push_status()
+            if change:
+                yield (index, block)
 
-    # Read and upload blocks.
-    async for index, block, change in read_blocks(source_afp,
-                                                  prior_map, start_block):
-        status = MirrorStatus(uploads=status.uploads, current_index=index)
-        await status_queue.put(status) # status update
+    await run_all_tasks((upload(index, block) async for index, block in read()),
+                        max_concurrent=MAX_CONCURRENT_UPLOADS)
 
-        if change:
-            filename = ('siaslice.'
-                        f'{format_bs(block_size)}.{index}.{block.md5_hash}.lz')
-            block_siapath = siapath + (filename,)
-            async with uploads_sem:
-                await siapath_delete_block(endpoint, siapath, index)
-                await siad_post(endpoint, BytesIO(block.compressed_bytes),
-                                'renter', 'uploadstream', *block_siapath)
-                uploads.append((index, block_siapath))
-    read_done = True
-    await check_progress_task
-    await status_queue.put(None) # end-of-operation sentinel
+
+async def siapath_delete_block(endpoint, siapath, block_index):
+    response = await siad_get(endpoint, 'renter', 'dir', *siapath)
+    if response.status == 500: # nonexistent directory
+        pass
+    elif response.status == 200:
+        paths = (meta['siapath']
+                 for meta in (await siad_json(response)).get('files', []))
+        for path in paths:
+            match = re.search(
+                    rf'siaslice\.\d+MiB\.{block_index}\.[a-z\d]+\.lz$', path)
+            if match:
+                await siad_post(endpoint, b'', 'renter', 'delete', *path.split('/'))
+    else:
+        raise ValueError(f"{'/'.join(siapath)} is a file, not a directory")
+
+
+async def read_blocks(source_afp, prior_block_map, start_block):
+    block_size = prior_block_map.block_size
+    index = start_block
+    reader = aiofile.Reader(
+            source_afp, chunk_size=block_size, offset=start_block*block_size)
+    async for chunk in reader:
+        md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
+        block = Block(md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes)
+        try:
+            prior_hash = prior_block_map.md5_hashes[index]
+        except IndexError:
+            prior_hash = ''
+        block_changed = prior_hash != block.md5_hash
+        yield (index, block, block_changed)
+        index += 1
+
+
+async def do_download(endpoint, target_file, siapath, start_block=0):
+    block_map = await siapath_block_map(endpoint, siapath)
+    md5_hashes = block_map.md5_hashes[start_block:]
+    async with aiofile.AIOFile(target_file, 'wb') as target_afp:
+        async def download(index, block_siapath):
+            offset = index*block_map.block_size
+            async for chunk in siad_stream_lz(endpoint, *block_siapath):
+                await target_file.write(chunk)
+                offset += len(chunk)
+        def block_siapath(index, md5_hash):
+            return siapath + (f'siaslice.{format_bs(block_map.block_size)}'
+                              f'MiB.{index}.{md5_hash}.lz',)
+        await run_all_tasks(
+                (download(index, block_siapath(index, md5_hash))
+                 for index, md5_hash in enumerate(md5_hashes) if md5_hash),
+                max_concurrent=MAX_CONCURRENT_DOWNLOADS)
 
 
 async def siapath_block_map(
@@ -212,38 +254,34 @@ def format_bs(block_size):
     return f'{n}MiB'
 
 
-async def siapath_delete_block(endpoint, siapath, block_index):
-    response = await siad_get(endpoint, 'renter', 'dir', *siapath)
-    if response.status == 500: # nonexistent directory
-        pass
-    elif response.status == 200:
-        paths = (meta['siapath']
-                 for meta in (await siad_json(response)).get('files', []))
-        for path in paths:
-            match = re.search(rf'siaslice\.\d+MiB\.{block_index}\.[a-z\d]+\.lz$',
-                              path)
-            if match:
-                await siad_post(endpoint, b'', 'renter', 'delete', *path.split('/'))
-    else:
-        raise ValueError(f"{'/'.join(siapath)} is a file, not a directory")
+async def siad_stream_lz(endpoint, *siapath):
+    loop = asyncio.get_running_loop()
+    response = await siad_get(endpoint, 'renter', 'stream', *siapath)
+    alzd = aioify(obj=LZMADecompressor().decompress)
+    while True:
+        chunk = await response.content.read(1*1e3*1e3)
+        if chunk:
+            yield alzd(chunk)
+        else:
+            break
 
 
 async def siad_get(endpoint, *path, **qs):
     url = f"{endpoint.domain}/{'/'.join(path)}"
     headers = { 'User-Agent': USER_AGENT }
-    async with aiohttp.ClientSession(
+    session = aiohttp.ClientSession(
             auth=aiohttp.BasicAuth('', password=endpoint.api_password),
-            timeout=aiohttp.ClientTimeout(total=None)) as session:
-        return await session.get(url, params=qs, headers=headers)
+            timeout=aiohttp.ClientTimeout(total=None))
+    return await session.get(url, params=qs, headers=headers)
 
 
 async def siad_post(endpoint, post_data, *path, **qs):
     url = f"{endpoint.domain}/{'/'.join(path)}"
     headers = { 'User-Agent': USER_AGENT }
-    async with aiohttp.ClientSession(
+    session = aiohttp.ClientSession(
             auth=aiohttp.BasicAuth('', password=endpoint.api_password),
-            timeout=aiohttp.ClientTimeout(total=None)) as session:
-        return await session.post(url, data=post_data, params=qs, headers=headers)
+            timeout=aiohttp.ClientTimeout(total=None))
+    return await session.post(url, data=post_data, params=qs, headers=headers)
 
 
 async def siad_json(response):
@@ -254,21 +292,30 @@ async def siad_json(response):
     return json
 
 
-async def read_blocks(source_afp, prior_block_map, start_block):
-    block_size = prior_block_map.block_size
-    index = start_block
-    reader = aiofile.Reader(
-            source_afp, chunk_size=block_size, offset=start_block*block_size)
-    async for chunk in reader:
-        md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
-        block = Block(md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes)
-        try:
-            prior_hash = prior_block_map.md5_hashes[index]
-        except IndexError:
-            prior_hash = ''
-        block_changed = prior_hash != block.md5_hash
-        yield (index, block, block_changed)
-        index += 1
+async def run_all_tasks(generator, max_concurrent=0):
+    state = {'complete': asyncio.Event(), 'running': 0,
+             'sem': asyncio.BoundedSemaphore(value=max_concurrent)}
+    async def run_task(the_cor, state):
+        await the_cor
+        state['running'] -= 1
+        state['sem'].release()
+        state['complete'].set()
+    if isinstance(generator, GeneratorType):
+        for cor in generator:
+            await state['sem'].acquire()
+            state['running'] += 1
+            asyncio.create_task(run_task(cor, state))
+    elif isinstance(generator, AsyncGeneratorType):
+        async for cor in generator:
+            await state['sem'].acquire()
+            state['running'] += 1
+            asyncio.create_task(run_task(cor, state))
+    else:
+        raise ValueError(f'not a generator: {generator}')
+
+    while state['running'] > 0:
+        await state['complete'].wait()
+        state['complete'].clear()
 
 
 if __name__ == '__main__':

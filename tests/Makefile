@@ -4,7 +4,7 @@ empty.img :
 	touch $@
 
 40MiB.img :
-	dd if=/dev/urandom of=$@ bs=1000000 count=40
+	dd if=/dev/zero of=$@ bs=1000000 count=40
 
 20Kstripe.img :
 	dd if=/dev/zero of=$@ bs=20K count=4
