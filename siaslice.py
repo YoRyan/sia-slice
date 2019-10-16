@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
 import asyncio
-import logging
-import lzma
 import os
 import pickle
 import re
@@ -193,11 +191,10 @@ async def read_blocks(source_afp, prior_block_map, start_block):
     async for chunk in reader:
         md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
         block = Block(md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes)
-        try:
-            prior_hash = prior_block_map.md5_hashes[index]
-        except IndexError:
-            prior_hash = ''
-        block_changed = prior_hash != block.md5_hash
+        if index in prior_block_map.md5_hashes:
+            block_changed = block.md5_hash != prior_block_map.md5_hashes[index]
+        else:
+            block_changed = True
         yield (index, block, block_changed)
         index += 1
 
