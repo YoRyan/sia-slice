@@ -16,7 +16,7 @@ class UploadAndDownloadAndDelete(asynctest.TestCase):
     pass
 
 
-class TestSiadOperations(asynctest.TestCase):
+class TestSiaOperations(asynctest.TestCase):
 
     async def test_delete_block(self):
         await ss.siad_post(ENDPOINT, b'', 'renter', 'uploadstream',
@@ -53,8 +53,10 @@ class TestSiadOperations(asynctest.TestCase):
         prior_map = ss.BlockMap(block_size=40*1000*1000, md5_hashes=[])
         async with AIOFile('40MiB.img', 'rb') as source_afp:
             reference_bytes = await source_afp.read()
-            await ss.siapath_mirror(ENDPOINT, source_afp,
-                                    ('siaslice_test_dir_abcd1234',), prior_map)
+            async for status in ss.siapath_mirror(
+                    ENDPOINT, source_afp,
+                    ('siaslice_test_dir_abcd1234',), prior_map):
+                pass
 
         uploaded_bytes = b''
         async for chunk in ss.siad_stream_lz(
@@ -70,8 +72,10 @@ class TestSiadOperations(asynctest.TestCase):
         prior_map = ss.BlockMap(block_size=20*1000*1000, md5_hashes=[])
         async with AIOFile('40MiB.img', 'rb') as source_afp:
             reference_bytes = await source_afp.read()
-            await ss.siapath_mirror(ENDPOINT, source_afp,
-                                    ('siaslice_test_dir_abcd1234',), prior_map)
+            async for status in ss.siapath_mirror(
+                    ENDPOINT, source_afp,
+                    ('siaslice_test_dir_abcd1234',), prior_map):
+                pass
 
         uploaded_bytes = b''
         async for chunk in ss.siad_stream_lz(

@@ -106,34 +106,27 @@ async def do_mirror(endpoint, source_file, siapath,
                 f'found {format_bs(prior_map.block_size)}')
 
     timestamp = datetime.now().strftime('%Y%m%d-%H%M')
-    status_file = f'siaslice-mirror-{timestamp}.dat'
-    async with aiofile.AIOFile(status_file, 'wb') as status_afp:
-        async with aiofile.AIOFile(source_file, mode='rb') as source_afp:
-            status_queue = asyncio.Queue(maxsize=1)
-            sync_task = asyncio.create_task(siapath_mirror(
-                    endpoint, source_afp, prior_map,
-                    status_queue=status_queue, start_block=start_block))
-
-            status = await status_queue.get()
-            while status is not None:
-                status_pickle = {'source_file': source_file,
-                                 'siapath': siapath,
-                                 'block_size': block_size,
-                                 'current_index': status.current_index}
-                await status_afp.write(pickle.dumps(status_pickle))
-                status = await status_queue.get()
-            await sync_task
+    status_afp = aiofile.AIOFile(f'siaslice-mirror-{timestamp}.dat', mode='wb')
+    source_afp = aiofile.AIOFile(source_file, mode='rb')
+    async for status in siapath_mirror(endpoint, source_afp, prior_map,
+                                       start_block=start_block):
+        await status_afp.write(pickle.dumps({
+                'source_file': source_file,
+                'siapath': siapath,
+                'block_size': block_size,
+                'current_index': status.current_index}))
+    source_afp.close()
+    status_afp.close()
     os.remove(status_file)
 
 
-async def siapath_mirror(endpoint, source_afp, siapath, prior_map,
-                         status_queue=asyncio.Queue(), start_block=0):
-    status = {'uploads': {}, 'current_index': 0}
-    async def push_status():
-        await status_queue.put(MirrorStatus(uploads=status['uploads'],
-                                            current_index=status['current_index']))
+async def siapath_mirror(endpoint, source_afp, siapath, prior_map, start_block=0):
+    uploads = {}
+    current_index = 0
+    update = asyncio.Event()
 
     async def upload(index, block):
+        nonlocal uploads, current_index, update
         up_siapath = siapath + (f'siaslice.{format_bs(prior_map.block_size)}.'
                                 f'{index}.{block.md5_hash}.lz',)
         await siapath_delete_block(endpoint, siapath, index)
@@ -143,23 +136,37 @@ async def siapath_mirror(endpoint, source_afp, siapath, prior_map,
         while not up_status.get('recoverable', False):
             up_status = (await siad_json(await siad_get(
                     endpoint, 'renter', 'file', *up_siapath))).get('file', {})
-            status['uploads'][index] = up_status.get('uploadprogress', 0)
-            await push_status()
+            uploads[index] = up_status.get('uploadprogress', 0)
+            update.set()
             await asyncio.sleep(10)
         else:
-            del status['uploads'][index]
-            await push_status()
+            del uploads[index]
+            update.set()
 
     async def read():
+        nonlocal current_index
         async for index, block, change in read_blocks(
                 source_afp, prior_map, start_block):
-            status['current_index'] = index
-            await push_status()
+            current_index = index
+            update.set()
             if change:
                 yield (index, block)
 
-    await run_all_tasks((upload(index, block) async for index, block in read()),
-                        max_concurrent=MAX_CONCURRENT_UPLOADS)
+    main_done = False
+    async def main():
+        nonlocal main_done, update
+        await run_all_tasks((upload(index, block) async for index, block in read()),
+                            max_concurrent=MAX_CONCURRENT_UPLOADS)
+        main_done = True
+        update.set()
+
+    main_task = asyncio.create_task(main())
+    while not main_done:
+        yield MirrorStatus(uploads=uploads, current_index=current_index)
+        await update.wait()
+        update.clear()
+    else:
+        await main_task
 
 
 async def siapath_delete_block(endpoint, siapath, block_index):
