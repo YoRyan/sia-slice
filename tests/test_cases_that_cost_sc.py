@@ -1,6 +1,8 @@
-import lzma
 import os
 import re
+from asyncio import sleep
+from io import BytesIO
+from lzma import compress
 
 import asynctest
 from aiofile import AIOFile
@@ -51,7 +53,7 @@ class TestSiaOperations(asynctest.TestCase):
 
     async def test_sia_mirror_1_block(self):
         prior_map = ss.BlockMap(block_size=40*1000*1000, md5_hashes=[])
-        async with AIOFile('40MiB.img', 'rb') as source_afp:
+        async with AIOFile('40MiBempty.img', 'rb') as source_afp:
             reference_bytes = await source_afp.read()
             async for status in ss.siapath_mirror(
                     ENDPOINT, source_afp,
@@ -70,7 +72,7 @@ class TestSiaOperations(asynctest.TestCase):
 
     async def test_sia_mirror_2_blocks(self):
         prior_map = ss.BlockMap(block_size=20*1000*1000, md5_hashes=[])
-        async with AIOFile('40MiB.img', 'rb') as source_afp:
+        async with AIOFile('40MiBempty.img', 'rb') as source_afp:
             reference_bytes = await source_afp.read()
             async for status in ss.siapath_mirror(
                     ENDPOINT, source_afp,
@@ -87,6 +89,48 @@ class TestSiaOperations(asynctest.TestCase):
                 'siaslice.20MiB.1.10e4462c9d0b08e7f0b304c4fbfeafa3.lz'):
             uploaded_bytes += chunk
         self.assertEqual(uploaded_bytes, reference_bytes)
+
+        await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
+                           'siaslice_test_dir_abcd1234', action='delete')
+
+    async def test_sia_download_1_block(self):
+        prior_map = ss.BlockMap(block_size=40*1000*1000, md5_hashes=[])
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference_bytes = await afp.read()
+            async for status in ss.siapath_mirror(
+                    ENDPOINT, afp, ('siaslice_test_dir_abcd1234',), prior_map):
+                pass
+
+        async with AIOFile('test_download.img', 'wb') as afp:
+            async for status in ss.siapath_download(
+                    ENDPOINT, afp, ('siaslice_test_dir_abcd1234',)):
+                pass
+        with open('test_download.img', 'rb') as fp:
+            download_bytes = fp.read()
+        os.remove('test_download.img')
+
+        self.assertEqual(download_bytes, reference_bytes)
+
+        await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
+                           'siaslice_test_dir_abcd1234', action='delete')
+
+    async def test_sia_download_2_blocks(self):
+        prior_map = ss.BlockMap(block_size=20*1000*1000, md5_hashes=[])
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference_bytes = await afp.read()
+            async for status in ss.siapath_mirror(
+                    ENDPOINT, afp, ('siaslice_test_dir_abcd1234',), prior_map):
+                pass
+
+        async with AIOFile('test_download.img', 'wb') as afp:
+            async for status in ss.siapath_download(
+                    ENDPOINT, afp, ('siaslice_test_dir_abcd1234',)):
+                pass
+        with open('test_download.img', 'rb') as fp:
+            download_bytes = fp.read()
+        os.remove('test_download.img')
+
+        self.assertEqual(download_bytes, reference_bytes)
 
         await ss.siad_post(ENDPOINT, b'', 'renter', 'dir',
                            'siaslice_test_dir_abcd1234', action='delete')

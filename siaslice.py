@@ -12,10 +12,10 @@ from io import BytesIO
 from lzma import compress, LZMADecompressor
 from types import AsyncGeneratorType, GeneratorType
 
-from aioify import aioify
-from defaultlist import defaultlist
 import aiofile
 import aiohttp
+from aioify import aioify
+from defaultlist import defaultlist
 
 
 aiomd5 = aioify(obj=md5)
@@ -248,10 +248,10 @@ async def siapath_download(endpoint, target_afp, siapath, start_block=0):
 
     main_done = False
     async def main():
-        nonlocal download, md5_hashes
+        nonlocal download, md5_hashes, main_done, update
         def block_siapath(index, md5_hash):
             return siapath + (f'siaslice.{format_bs(block_map.block_size)}'
-                              f'MiB.{index}.{md5_hash}.lz',)
+                              f'.{index}.{md5_hash}.lz',)
         await run_all_tasks(
                 (download(index, block_siapath(index, md5_hash))
                  for index, md5_hash in enumerate(md5_hashes) if md5_hash),
@@ -311,11 +311,10 @@ def format_bs(block_size):
 
 
 async def siad_stream_lz(endpoint, *siapath):
-    loop = asyncio.get_running_loop()
     response = await siad_get(endpoint, 'renter', 'stream', *siapath)
     alzd = aioify(obj=LZMADecompressor().decompress)
     while True:
-        chunk = await response.content.read(1*1e3*1e3)
+        chunk = await response.content.read(1*1000*1000)
         if chunk:
             yield alzd(chunk)
         else:
