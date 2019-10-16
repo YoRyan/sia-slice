@@ -31,7 +31,7 @@ USER_AGENT = 'Sia-Agent'
 BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
 Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
 SiadEndpoint = namedtuple('SiadEndpoint', ['domain', 'api_password'])
-MirrorStatus = namedtuple('MirrorStatus', ['uploads', 'current_index'])
+OpStatus = namedtuple('OpStatus', ['transfers', 'current_index'])
 
 class SiadError(Exception):
     def __init__(self, status, message):
@@ -83,8 +83,8 @@ async def amain():
     elif args.download:
         await do_download(endpoint, args.file, await siapath())
     elif args.resume:
-        with aiofile.AIOFile(args.file, 'rb') as status_afp:
-            status_pickle = pickle.loads(await status_afp.read())
+        with aiofile.AIOFile(args.file, 'rb') as state_afp:
+            status_pickle = pickle.loads(await state_afp.read())
         if 'siaslice-mirror' in args.file:
             await do_mirror(
                     endpoint, status_pickle['source_file'], status_pickle['siapath'],
@@ -105,24 +105,24 @@ async def do_mirror(endpoint, source_file, siapath,
                 f'block size mismatch: expected {format_bs(block_size)}, '
                 f'found {format_bs(prior_map.block_size)}')
 
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M')
-    status_afp = aiofile.AIOFile(f'siaslice-mirror-{timestamp}.dat', mode='wb')
+    state_file = f"siaslice-mirror-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
+    state_afp = aiofile.AIOFile(state_file, mode='wb')
     source_afp = aiofile.AIOFile(source_file, mode='rb')
     async for status in siapath_mirror(endpoint, source_afp, prior_map,
                                        start_block=start_block):
-        await status_afp.write(pickle.dumps({
+        await state_afp.write(pickle.dumps({
                 'source_file': source_file,
                 'siapath': siapath,
                 'block_size': block_size,
                 'current_index': status.current_index}))
     source_afp.close()
-    status_afp.close()
-    os.remove(status_file)
+    state_afp.close()
+    os.remove(state_file)
 
 
 async def siapath_mirror(endpoint, source_afp, siapath, prior_map, start_block=0):
     uploads = {}
-    current_index = 0
+    current_index = start_block
     update = asyncio.Event()
 
     async def upload(index, block):
@@ -136,7 +136,7 @@ async def siapath_mirror(endpoint, source_afp, siapath, prior_map, start_block=0
         while not up_status.get('recoverable', False):
             up_status = (await siad_json(await siad_get(
                     endpoint, 'renter', 'file', *up_siapath))).get('file', {})
-            uploads[index] = up_status.get('uploadprogress', 0)
+            uploads[index] = up_status.get('uploadprogress', 0)/100.0
             update.set()
             await asyncio.sleep(10)
         else:
@@ -154,7 +154,7 @@ async def siapath_mirror(endpoint, source_afp, siapath, prior_map, start_block=0
 
     main_done = False
     async def main():
-        nonlocal main_done, update
+        nonlocal upload, read, main_done, update
         await run_all_tasks((upload(index, block) async for index, block in read()),
                             max_concurrent=MAX_CONCURRENT_UPLOADS)
         main_done = True
@@ -162,7 +162,7 @@ async def siapath_mirror(endpoint, source_afp, siapath, prior_map, start_block=0
 
     main_task = asyncio.create_task(main())
     while not main_done:
-        yield MirrorStatus(uploads=uploads, current_index=current_index)
+        yield OpStatus(transfers=uploads, current_index=current_index)
         await update.wait()
         update.clear()
     else:
@@ -203,14 +203,53 @@ async def read_blocks(source_afp, prior_block_map, start_block):
 
 
 async def do_download(endpoint, target_file, siapath, start_block=0):
+    state_file = f"siaslice-download-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
+    state_afp = aiofile.AIOFile(state_file, mode='wb')
+    target_afp = aiofile.AIOFile(target_file, mode='wb')
+    async for status in siapath_download(endpoint, target_afp, siapath,
+                                         start_block=start_block):
+        await state_afp.write(pickle.dumps({
+                'target_file': target_file,
+                'siapath': siapath,
+                'current_index': status.current_index}))
+    target_afp.close()
+    state_afp.close()
+    os.remove(state_file)
+
+
+async def siapath_download(endpoint, target_afp, siapath, start_block=0):
+    downloads = {}
+    current_index = start_block
+    update = asyncio.Event()
+
     block_map = await siapath_block_map(endpoint, siapath)
     md5_hashes = block_map.md5_hashes[start_block:]
-    async with aiofile.AIOFile(target_file, 'wb') as target_afp:
-        async def download(index, block_siapath):
-            offset = index*block_map.block_size
-            async for chunk in siad_stream_lz(endpoint, *block_siapath):
-                await target_file.write(chunk)
-                offset += len(chunk)
+
+    async def download(index, block_siapath):
+        nonlocal block_map, downloads, current_index
+        info = (await siad_json(await siad_get(
+                endpoint, 'renter', 'file', *block_siapath))).get('file', {})
+        filesize = info.get('filesize', 0)
+        written = 0
+        async for chunk in siad_stream_lz(endpoint, *block_siapath):
+            await target_afp.write(
+                    chunk, offset=(index*block_map.block_size + written))
+            written += len(chunk)
+
+            if filesize > 0:
+                downloads[index] = written/filesize
+            else:
+                downloads[index] = 0.0
+            update.set()
+
+        if index in downloads:
+            del downloads[index]
+        current_index = min(current_index, index)
+        update.set()
+
+    main_done = False
+    async def main():
+        nonlocal download, md5_hashes
         def block_siapath(index, md5_hash):
             return siapath + (f'siaslice.{format_bs(block_map.block_size)}'
                               f'MiB.{index}.{md5_hash}.lz',)
@@ -218,6 +257,16 @@ async def do_download(endpoint, target_file, siapath, start_block=0):
                 (download(index, block_siapath(index, md5_hash))
                  for index, md5_hash in enumerate(md5_hashes) if md5_hash),
                 max_concurrent=MAX_CONCURRENT_DOWNLOADS)
+        main_done = True
+        update.set()
+
+    main_task = asyncio.create_task(main())
+    while not main_done:
+        yield OpStatus(transfers=downloads, current_index=current_index)
+        await update.wait()
+        update.clear()
+    else:
+        await main_task
 
 
 async def siapath_block_map(
