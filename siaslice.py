@@ -130,6 +130,7 @@ async def do_mirror(stdscr, session, source_file, siapath,
                 'siapath': siapath,
                 'block_size': block_size,
                 'current_index': status.current_index}))
+        await state_afp.fsync()
         show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
     source_afp.close()
     state_afp.close()
@@ -229,6 +230,7 @@ async def do_download(stdscr, session, target_file, siapath, start_block=0):
                 'target_file': target_file,
                 'siapath': siapath,
                 'current_index': status.current_index}))
+        await state_afp.fsync()
         show_status(stdscr, status, title=f'{format_sp(siapath)} -> {source_file}')
     target_afp.close()
     state_afp.close()
