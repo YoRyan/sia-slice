@@ -344,30 +344,32 @@ def format_sp(siapath): return '/'.join(siapath)
 
 
 def show_status(stdscr, status, title=''):
+    stdscr.refresh()
+    lines, cols = stdscr.getmaxyx()
     curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
     if status.last_index > 0:
         blocks = f'block {status.current_index} / {status.last_index}'
     else:
         blocks = f'block {status.current_index}'
-    stdscr.addstr(0, 0, ' '*curses.COLS, curses.color_pair(1))
-    stdscr.addstr(0, 0, title[:curses.COLS], curses.color_pair(1))
-    stdscr.addstr(0, curses.COLS - len(blocks) - 1, ' ' + blocks,
+    stdscr.addstr(0, 0, ' '*cols, curses.color_pair(1))
+    stdscr.addstr(0, 0, title[:cols], curses.color_pair(1))
+    stdscr.addstr(0, max(cols - len(blocks) - 1, 0), ' ' + blocks,
                   curses.color_pair(1))
 
-    visible_transfers = min(len(status.transfers), curses.LINES - 2)
+    visible_transfers = min(len(status.transfers), lines - 2)
     transfers = sorted(status.transfers.items())[:visible_transfers]
     def progress_bar(y, block, pct):
-        bar_size = max(curses.COLS - 11 - 4, 10)
+        bar_size = max(cols - 11 - 4, 10)
         stdscr.addstr(y, 0, f'{block: 10} ')
         stdscr.addstr(y, 11, f"[{' '*(bar_size - 2)}]")
         stdscr.addstr(y, 11 + 1, f"{'='*round(pct*(bar_size - 2))}>")
-        stdscr.addstr(y, curses.COLS - 4, f'{round(pct*100.0): 3}%')
-    for l in range(curses.LINES - 2):
+        stdscr.addstr(y, cols - 4, f'{round(pct*100.0): 3}%')
+    for l in range(lines - 2):
         try:
             progress_bar(l + 1, *transfers[l])
         except IndexError:
-            stdscr.addstr(l + 1, 0, ' '*curses.COLS)
+            stdscr.addstr(l + 1, 0, ' '*cols)
 
     stdscr.refresh()
 
