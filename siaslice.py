@@ -22,7 +22,7 @@ from defaultlist import defaultlist
 aiomd5 = aioify(obj=md5)
 aiolzc = aioify(obj=compress)
 
-BLOCK_MB = 40
+BLOCK_MB = 100
 MAX_CONCURRENT_UPLOADS = 20
 MAX_CONCURRENT_DOWNLOADS = 10
 USER_AGENT = 'Sia-Agent'
