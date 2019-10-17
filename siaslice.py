@@ -79,7 +79,7 @@ def main():
 
 async def amain(stdscr, args):
     session = SiadSession('http://localhost:9980', os.environ['SIAD_API'])
-    session.create()
+    await session.create()
     async def siapath():
         if not args.siapath:
             raise ValueError('no siapath specified')
@@ -106,7 +106,7 @@ async def amain(stdscr, args):
                     state_pickle['siapath'], start_block=state_pickle['start_block'])
         else:
             raise ValueError(f'bad state file: {args.file}')
-    session.close()
+    await session.close()
 
 
 async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
