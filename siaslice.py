@@ -22,7 +22,7 @@ from defaultlist import defaultlist
 aiomd5 = aioify(obj=md5)
 aiolzc = aioify(obj=compress)
 
-DEFAULT_BLOCK_MB = 40
+BLOCK_MB = 40
 MAX_CONCURRENT_UPLOADS = 20
 MAX_CONCURRENT_DOWNLOADS = 10
 USER_AGENT = 'Sia-Agent'
@@ -57,10 +57,9 @@ def main():
             description='Sync a large file to Sia with incremental updates.')
     argp_op = argp.add_mutually_exclusive_group(required=True)
     argp_op.add_argument(
-            '-m', '--mirror', dest='mb', const='40', type=int, nargs='?',
-            help=('sync a copy to Sia by dividing the file into chunks '
-                  f'of MB megabytes (default {DEFAULT_BLOCK_MB}MiB; cannot be '
-                  'changed after the initial upload)'))
+            '-m', '--mirror', action='store_true',
+            help=('sync a copy to Sia by dividing the file into '
+                  f'{BLOCK_MB}MiB chunks'))
     argp_op.add_argument('-d', '--download', action='store_true',
                          help='reconstruct a copy using Sia')
     argp_op.add_argument(
@@ -89,9 +88,8 @@ async def amain(stdscr, args):
         if not siapath_valid:
             raise ValueError(f'invalid siapath: {args.siapath}')
         return args.siapath.split('/')
-    if args.mb:
-        await do_mirror(stdscr, session, args.file, await siapath(),
-                        block_size=args.mb)
+    if args.mirror:
+        await do_mirror(stdscr, session, args.file, await siapath())
     elif args.download:
         await do_download(stdscr, session, args.file, await siapath())
     elif args.resume:
@@ -100,7 +98,7 @@ async def amain(stdscr, args):
         if 'siaslice-mirror' in args.file:
             await do_mirror(
                     stdscr, session, state_pickle['source_file'],
-                    state_pickle['siapath'], block_size=state_pickle['block_size'],
+                    state_pickle['siapath'],
                     start_block=state_pickle['current_index'])
         elif 'siaslice-download' in args.file:
             await do_download(
@@ -111,15 +109,9 @@ async def amain(stdscr, args):
     session.close()
 
 
-async def do_mirror(stdscr, session, source_file, siapath,
-                    block_size=DEFAULT_BLOCK_MB*1e3*1e3, start_block=0):
+async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
     prior_map = await siapath_block_map(session, siapath,
-                                        fallback_block_size=block_size)
-    if prior_map.block_size != block_size:
-        raise ValueError(
-                f'block size mismatch: expected {format_bs(block_size)}, '
-                f'found {format_bs(prior_map.block_size)}')
-
+                                        fallback_block_size=BLOCK_MB*1e3*1e3)
     state_file = f"siaslice-mirror-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     source_afp = aiofile.AIOFile(source_file, mode='rb')
@@ -128,7 +120,7 @@ async def do_mirror(stdscr, session, source_file, siapath,
         await state_afp.write(pickle.dumps({
                 'source_file': source_file,
                 'siapath': siapath,
-                'block_size': block_size,
+                'block_size': prior_map.block_size,
                 'current_index': status.current_index}))
         await state_afp.fsync()
         show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
@@ -292,7 +284,7 @@ async def siapath_download(session, target_afp, siapath, start_block=0):
 
 
 async def siapath_block_map(
-        session, siapath, fallback_block_size=DEFAULT_BLOCK_MB*1e3*1e3):
+        session, siapath, fallback_block_size=BLOCK_MB*1e3*1e3):
     response = await siad_get(session, 'renter', 'dir', *siapath)
     if response.status == 500: # nonexistent directory
         return BlockMap(block_size=fallback_block_size, md5_hashes=[])
