@@ -372,7 +372,7 @@ def show_status(stdscr, status, title=''):
         bar_size = max(cols - 11 - 4, 10)
         stdscr.addstr(y, 0, f'{block: 10} ')
         stdscr.addstr(y, 11, f"[{' '*(bar_size - 2)}]")
-        stdscr.addstr(y, 11 + 1, f"{'='*round(pct*(bar_size - 2))}>")
+        stdscr.addstr(y, 11 + 1, f"{'='*round(pct*(bar_size - 3))}>")
         stdscr.addstr(y, cols - 4, f'{round(pct*100.0): 3}%')
     for l in range(lines - 2):
         try:
