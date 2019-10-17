@@ -173,7 +173,7 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
         update.set()
 
     main_task = asyncio.create_task(main())
-    last_block = os.stat(source_afp.fileno()).st_size//prior_map.block_size
+    last_block = int(os.stat(source_afp.fileno()).st_size//prior_map.block_size)
     while not main_done:
         yield OpStatus(transfers=uploads, current_index=current_index,
                        last_index=last_block)
@@ -346,7 +346,10 @@ def format_sp(siapath): return '/'.join(siapath)
 def show_status(stdscr, status, title=''):
     curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
-    blocks = f'{status.current_index} / {status.last_index}'
+    if status.last_index > 0:
+        blocks = f'block {status.current_index} / {status.last_index}'
+    else:
+        blocks = f'block {status.current_index}'
     stdscr.addstr(0, 0, ' '*curses.COLS, curses.color_pair(1))
     stdscr.addstr(0, 0, title[:curses.COLS], curses.color_pair(1))
     stdscr.addstr(0, curses.COLS - len(blocks) - 1, ' ' + blocks,
