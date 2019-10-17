@@ -142,6 +142,9 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
         up_siapath = siapath + [f'siaslice.{format_bs(prior_map.block_size)}.'
                                 f'{index}.{block.md5_hash}.lz']
         await siapath_delete_block(session, siapath, index)
+        uploads[index] = 0.0
+        update.set()
+
         await siad_post(session, BytesIO(block.compressed_bytes),
                         'renter', 'uploadstream', *up_siapath)
         up_status = {}
