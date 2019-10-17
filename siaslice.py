@@ -94,7 +94,7 @@ async def amain(stdscr, args):
     elif args.download:
         await do_download(stdscr, session, args.file, await siapath())
     elif args.resume:
-        with aiofile.AIOFile(args.file, 'rb') as state_afp:
+        async with aiofile.AIOFile(args.file, 'rb') as state_afp:
             state_pickle = pickle.loads(await state_afp.read())
         if 'siaslice-mirror' in args.file:
             await do_mirror(
