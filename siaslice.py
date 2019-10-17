@@ -111,8 +111,7 @@ async def amain(stdscr, args):
 
 
 async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
-    prior_map = await siapath_block_map(session, siapath,
-                                        fallback_block_size=BLOCK_MB*1e3*1e3)
+    prior_map = await siapath_block_map(session, siapath)
     state_file = f"siaslice-mirror-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
@@ -299,7 +298,7 @@ async def siapath_block_map(
     elif response.status == 200:
         filenames = (meta['siapath'].split('/')[-1:][0]
                      for meta in (await siad_json(response)).get('files', []))
-        block_size = None
+        block_size = fallback_block_size
         hashes = defaultlist(lambda: '')
         for filename in filenames:
             # Extract block size, index, and MD5 hash from filename.
