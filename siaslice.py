@@ -132,20 +132,26 @@ async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
 
 
 async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0):
+    api_uploads = set()
     uploads = {}
     current_index = start_block
     update = asyncio.Event()
 
     async def upload(index, block):
-        nonlocal uploads, current_index, update
+        nonlocal api_uploads, uploads, current_index, update
+        api_uploads.add(index)
         up_siapath = siapath + [f'siaslice.{format_bs(prior_map.block_size)}.'
                                 f'{index}.{block.md5_hash}.lz']
-        await siapath_delete_block(session, siapath, index)
         uploads[index] = 0.0
         update.set()
 
+        await siapath_delete_block(session, siapath, index)
         await siad_post(session, BytesIO(block.compressed_bytes),
                         'renter', 'uploadstream', *up_siapath)
+        current_index = min(api_uploads)
+        api_uploads.remove(index)
+        update.set()
+
         up_status = {}
         while up_status.get('uploadprogress', 0) < 100:
             up_status = (await siad_json(await siad_get(
@@ -157,20 +163,13 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
             del uploads[index]
             update.set()
 
-    async def read():
-        nonlocal current_index
-        async for index, block, change in read_blocks(
-                source_afp, prior_map, start_block):
-            current_index = index
-            update.set()
-            if change:
-                yield (index, block)
-
     main_done = False
     async def main():
-        nonlocal upload, read, main_done, update
-        await run_all_tasks((upload(index, block) async for index, block in read()),
-                            max_concurrent=MAX_CONCURRENT_UPLOADS)
+        nonlocal upload, main_done, update
+        await run_all_tasks(
+                (upload(index, block) async for index, block, change
+                 in read_blocks(source_afp, prior_map, start_block) if change),
+                max_concurrent=MAX_CONCURRENT_UPLOADS)
         main_done = True
         update.set()
 
