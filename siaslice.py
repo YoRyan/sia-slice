@@ -115,8 +115,10 @@ async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
                                         fallback_block_size=BLOCK_MB*1e3*1e3)
     state_file = f"siaslice-mirror-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
+    await state_afp.open()
     source_afp = aiofile.AIOFile(source_file, mode='rb')
-    async for status in siapath_mirror(session, source_afp, prior_map,
+    await source_afp.open()
+    async for status in siapath_mirror(session, source_afp, siapath, prior_map,
                                        start_block=start_block):
         await state_afp.write(pickle.dumps({
                 'source_file': source_file,
@@ -137,8 +139,8 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
 
     async def upload(index, block):
         nonlocal uploads, current_index, update
-        up_siapath = siapath + (f'siaslice.{format_bs(prior_map.block_size)}.'
-                                f'{index}.{block.md5_hash}.lz',)
+        up_siapath = siapath + [f'siaslice.{format_bs(prior_map.block_size)}.'
+                                f'{index}.{block.md5_hash}.lz']
         await siapath_delete_block(session, siapath, index)
         await siad_post(session, BytesIO(block.compressed_bytes),
                         'renter', 'uploadstream', *up_siapath)
@@ -174,7 +176,7 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
     last_block = os.stat(source_afp.fileno()).st_size//prior_map.block_size
     while not main_done:
         yield OpStatus(transfers=uploads, current_index=current_index,
-                       last_index=last_bock)
+                       last_index=last_block)
         await update.wait()
         update.clear()
     else:
@@ -216,7 +218,9 @@ async def read_blocks(source_afp, prior_block_map, start_block):
 async def do_download(stdscr, session, target_file, siapath, start_block=0):
     state_file = f"siaslice-download-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
+    await state_afp.open()
     target_afp = aiofile.AIOFile(target_file, mode='wb')
+    await target_afp.open()
     async for status in siapath_download(session, target_afp, siapath,
                                          start_block=start_block):
         await state_afp.write(pickle.dumps({
@@ -264,8 +268,8 @@ async def siapath_download(session, target_afp, siapath, start_block=0):
     async def main():
         nonlocal download, md5_hashes, main_done, update
         def block_siapath(index, md5_hash):
-            return siapath + (f'siaslice.{format_bs(block_map.block_size)}'
-                              f'.{index}.{md5_hash}.lz',)
+            return siapath + [f'siaslice.{format_bs(block_map.block_size)}'
+                              f'.{index}.{md5_hash}.lz']
         await run_all_tasks(
                 (download(index, block_siapath(index, md5_hash))
                  for index, md5_hash in enumerate(md5_hashes) if md5_hash),
