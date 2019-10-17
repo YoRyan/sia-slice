@@ -83,9 +83,10 @@ async def amain(stdscr, args):
     async def siapath():
         if not args.siapath:
             raise ValueError('no siapath specified')
-        siapath_valid = (await siad_post(
-                session, b'', 'renter', 'validate', args.siapath)).status == 204
-        if not siapath_valid:
+        async def validate_sp(sp):
+            response = await siad_post(session, b'', 'renter', 'validatesiapath', sp)
+            return response.status == 204
+        if not await validate_sp(args.siapath):
             raise ValueError(f'invalid siapath: {args.siapath}')
         return args.siapath.split('/')
     if args.mirror:
