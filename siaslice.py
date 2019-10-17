@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
+import curses
 import os
 import pickle
 import re
@@ -28,7 +29,7 @@ USER_AGENT = 'Sia-Agent'
 
 BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
 Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
-OpStatus = namedtuple('OpStatus', ['transfers', 'current_index'])
+OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
 
 class SiadError(Exception):
     def __init__(self, status, message):
@@ -51,11 +52,7 @@ class SiadSession():
         await self.client.close()
 
 
-def main(*arg, **kwarg):
-    asyncio.run(amain(*arg, **kwarg))
-
-
-async def amain():
+def main():
     argp = ArgumentParser(
             description='Sync a large file to Sia with incremental updates.')
     argp_op = argp.add_mutually_exclusive_group(required=True)
@@ -75,7 +72,13 @@ async def amain():
             'siapath', nargs='?',
             help='Sia directory target for uploads or source for downloads')
     args = argp.parse_args()
+    def start(stdscr):
+        nonlocal args
+        asyncio.run(amain(stdscr, args))
+    curses.wrapper(start)
 
+
+async def amain(stdscr, args):
     session = SiadSession('http://localhost:9980', os.environ['SIAD_API'])
     session.create()
     async def siapath():
@@ -87,27 +90,28 @@ async def amain():
             raise ValueError(f'invalid siapath: {args.siapath}')
         return args.siapath.split('/')
     if args.mb:
-        await do_mirror(session, args.file, await siapath(), block_size=args.mb)
+        await do_mirror(stdscr, session, args.file, await siapath(),
+                        block_size=args.mb)
     elif args.download:
-        await do_download(session, args.file, await siapath())
+        await do_download(stdscr, session, args.file, await siapath())
     elif args.resume:
         with aiofile.AIOFile(args.file, 'rb') as state_afp:
             state_pickle = pickle.loads(await state_afp.read())
         if 'siaslice-mirror' in args.file:
             await do_mirror(
-                    session, state_pickle['source_file'], state_pickle['siapath'],
-                    block_size=state_pickle['block_size'],
+                    stdscr, session, state_pickle['source_file'],
+                    state_pickle['siapath'], block_size=state_pickle['block_size'],
                     start_block=state_pickle['current_index'])
         elif 'siaslice-download' in args.file:
             await do_download(
-                    session, state_pickle['target_file'], state_pickle['siapath'],
-                    start_block=state_pickle['start_block'])
+                    stdscr, session, state_pickle['target_file'],
+                    state_pickle['siapath'], start_block=state_pickle['start_block'])
         else:
             raise ValueError(f'bad state file: {args.file}')
     session.close()
 
 
-async def do_mirror(session, source_file, siapath,
+async def do_mirror(stdscr, session, source_file, siapath,
                     block_size=DEFAULT_BLOCK_MB*1e3*1e3, start_block=0):
     prior_map = await siapath_block_map(session, siapath,
                                         fallback_block_size=block_size)
@@ -126,6 +130,7 @@ async def do_mirror(session, source_file, siapath,
                 'siapath': siapath,
                 'block_size': block_size,
                 'current_index': status.current_index}))
+        show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
     source_afp.close()
     state_afp.close()
     os.remove(state_file)
@@ -149,7 +154,7 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
                     session, 'renter', 'file', *up_siapath))).get('file', {})
             uploads[index] = up_status.get('uploadprogress', 0)/100.0
             update.set()
-            await asyncio.sleep(10)
+            await asyncio.sleep(2)
         else:
             del uploads[index]
             update.set()
@@ -172,8 +177,10 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
         update.set()
 
     main_task = asyncio.create_task(main())
+    last_block = os.stat(source_afp.fileno()).st_size//prior_map.block_size
     while not main_done:
-        yield OpStatus(transfers=uploads, current_index=current_index)
+        yield OpStatus(transfers=uploads, current_index=current_index,
+                       last_index=last_bock)
         await update.wait()
         update.clear()
     else:
@@ -193,7 +200,7 @@ async def siapath_delete_block(session, siapath, block_index):
             if match:
                 await siad_post(session, b'', 'renter', 'delete', *path.split('/'))
     else:
-        raise ValueError(f"{'/'.join(siapath)} is a file, not a directory")
+        raise ValueError(f"{format_sp(siapath)} is a file, not a directory")
 
 
 async def read_blocks(source_afp, prior_block_map, start_block):
@@ -212,7 +219,7 @@ async def read_blocks(source_afp, prior_block_map, start_block):
         index += 1
 
 
-async def do_download(session, target_file, siapath, start_block=0):
+async def do_download(stdscr, session, target_file, siapath, start_block=0):
     state_file = f"siaslice-download-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     target_afp = aiofile.AIOFile(target_file, mode='wb')
@@ -222,6 +229,7 @@ async def do_download(session, target_file, siapath, start_block=0):
                 'target_file': target_file,
                 'siapath': siapath,
                 'current_index': status.current_index}))
+        show_status(stdscr, status, title=f'{format_sp(siapath)} -> {source_file}')
     target_afp.close()
     state_afp.close()
     os.remove(state_file)
@@ -271,8 +279,10 @@ async def siapath_download(session, target_afp, siapath, start_block=0):
         update.set()
 
     main_task = asyncio.create_task(main())
+    last_block = len(block_map.md5_hashes) - 1
     while not main_done:
-        yield OpStatus(transfers=downloads, current_index=current_index)
+        yield OpStatus(transfers=downloads, current_index=current_index,
+                       last_index=last_block)
         await update.wait()
         update.clear()
     else:
@@ -313,12 +323,7 @@ async def siapath_block_map(
 
         return BlockMap(block_size=block_size, md5_hashes=hashes)
     else:
-        raise ValueError(f"{'/'.join(siapath)} is a file, not a directory")
-
-
-def format_bs(block_size):
-    n = int(block_size/1e3/1e3)
-    return f'{n}MiB'
+        raise ValueError(f"{format_sp(siapath)} is a file, not a directory")
 
 
 async def siad_stream_lz(session, *siapath):
@@ -330,6 +335,39 @@ async def siad_stream_lz(session, *siapath):
             yield alzd(chunk)
         else:
             break
+
+
+def format_bs(block_size):
+    n = int(block_size/1e3/1e3)
+    return f'{n}MiB'
+
+def format_sp(siapath): return '/'.join(siapath)
+
+
+def show_status(stdscr, status, title=''):
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
+
+    blocks = f'{status.current_index} / {status.last_index}'
+    stdscr.addstr(0, 0, ' '*curses.COLS, curses.color_pair(1))
+    stdscr.addstr(0, 0, title[:curses.COLS], curses.color_pair(1))
+    stdscr.addstr(0, curses.COLS - len(blocks) - 1, ' ' + blocks,
+                  curses.color_pair(1))
+
+    visible_transfers = min(len(status.transfers), curses.LINES - 2)
+    transfers = sorted(status.transfers.items())[:visible_transfers]
+    def progress_bar(y, block, pct):
+        bar_size = max(curses.COLS - 11 - 4, 10)
+        stdscr.addstr(y, 0, f'{block: 10} ')
+        stdscr.addstr(y, 11, f"[{' '*(bar_size - 2)}]")
+        stdscr.addstr(y, 11 + 1, f"{'='*round(pct*(bar_size - 2))}>")
+        stdscr.addstr(y, curses.COLS - 4, f'{round(pct*100.0): 3}%')
+    for l in range(curses.LINES - 2):
+        try:
+            progress_bar(l + 1, *transfers[l])
+        except IndexError:
+            stdscr.addstr(l + 1, 0, ' '*curses.COLS)
+
+    stdscr.refresh()
 
 
 async def siad_get(session, *path, **qs):
