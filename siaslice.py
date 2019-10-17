@@ -204,9 +204,9 @@ async def read_blocks(source_afp, prior_block_map, start_block):
     async for chunk in reader:
         md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
         block = Block(md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes)
-        if index in prior_block_map.md5_hashes:
+        try:
             block_changed = block.md5_hash != prior_block_map.md5_hashes[index]
-        else:
+        except IndexError:
             block_changed = True
         yield (index, block, block_changed)
         index += 1
