@@ -23,7 +23,6 @@ aiomd5 = aioify(obj=md5)
 aiolzc = aioify(obj=compress)
 
 BLOCK_MB = 100
-MAX_CONCURRENT_UPLOADS = 20
 MAX_CONCURRENT_DOWNLOADS = 10
 USER_AGENT = 'Sia-Agent'
 
@@ -136,28 +135,6 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
     current_index = start_block
     update = asyncio.Event()
 
-    async def read():
-        nonlocal uploads, current_index, update
-        async for index, block, change in \
-                read_blocks(source_afp, prior_map, start_block):
-            current_index = index
-            if change:
-                uploads[index] = 0.0
-                update.set()
-                up_siapath = \
-                        siapath + [f'siaslice.{format_bs(prior_map.block_size)}.'
-                                   f'{index}.{block.md5_hash}.lz']
-                await siapath_delete_block(session, siapath, index)
-                try:
-                    await siad_post(session, BytesIO(block.compressed_bytes),
-                                    'renter', 'uploadstream', *up_siapath)
-                except:
-                    await siapath_delete_block(session, siapath, index)
-                    raise
-                yield watch_upload(index, up_siapath)
-            else:
-                update.set()
-
     async def watch_upload(index, up_siapath):
         nonlocal uploads, update
         uploads[index] = 0.0
@@ -175,9 +152,22 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
 
     main_done = False
     async def main():
-        nonlocal read, main_done, update
-        await run_all_tasks((task async for task in read()),
-                            max_concurrent=MAX_CONCURRENT_UPLOADS)
+        nonlocal uploads, current_index, main_done, update
+        async for index, block, change in \
+                read_blocks(source_afp, prior_map, start_block):
+            current_index = index
+            if change or (index == start_block and start_block != 0):
+                uploads[index] = 0.0
+                update.set()
+                up_siapath = \
+                        siapath + [f'siaslice.{format_bs(prior_map.block_size)}.'
+                                   f'{index}.{block.md5_hash}.lz']
+                await siapath_delete_block(session, siapath, index)
+                await siad_post(session, BytesIO(block.compressed_bytes),
+                                'renter', 'uploadstream', *up_siapath)
+                await watch_upload(index, up_siapath)
+            else:
+                update.set()
         main_done = True
         update.set()
 
@@ -403,7 +393,7 @@ async def siad_json(response):
     return json
 
 
-async def run_all_tasks(generator, max_concurrent=0):
+async def run_all_tasks(generator, max_concurrent=999):
     sem = asyncio.BoundedSemaphore(value=max_concurrent)
     running = 0
     complete = asyncio.Event()
