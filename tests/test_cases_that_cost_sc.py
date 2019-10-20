@@ -30,7 +30,7 @@ class TestSiaOperations(asynctest.TestCase):
                            'siaslice_test_dir_abcd1234', 'siaslice.1MiB.69.x.lz')
 
         await ss.siapath_delete_block(
-                self.session, ('siaslice_test_dir_abcd1234',), 69)
+                self.session, ['siaslice_test_dir_abcd1234'], 69)
 
         response = await ss.siad_json(await ss.siad_get(
                 self.session, 'renter', 'dir', 'siaslice_test_dir_abcd1234'))
@@ -50,7 +50,7 @@ class TestSiaOperations(asynctest.TestCase):
                            'siaslice_test_dir_abcd1234', 'siaslice.40MiB.2.z.lz')
 
         block_map = await ss.siapath_block_map(self.session,
-                                               ('siaslice_test_dir_abcd1234',))
+                                               ['siaslice_test_dir_abcd1234'])
         self.assertEqual(block_map.md5_hashes, ['x', 'y', 'z'])
 
         await ss.siad_post(self.session, b'', 'renter', 'delete',
@@ -66,7 +66,7 @@ class TestSiaOperations(asynctest.TestCase):
             reference_bytes = await source_afp.read()
             async for status in ss.siapath_mirror(
                     self.session, source_afp,
-                    ('siaslice_test_dir_abcd1234',), prior_map):
+                    ['siaslice_test_dir_abcd1234'], prior_map):
                 pass
 
         uploaded_bytes = b''
@@ -86,7 +86,7 @@ class TestSiaOperations(asynctest.TestCase):
             reference_bytes = await source_afp.read()
             async for status in ss.siapath_mirror(
                     self.session, source_afp,
-                    ('siaslice_test_dir_abcd1234',), prior_map):
+                    ['siaslice_test_dir_abcd1234'], prior_map):
                 pass
 
         uploaded_bytes = b''
@@ -112,12 +112,12 @@ class TestSiaOperations(asynctest.TestCase):
         async with AIOFile('40MiBempty.img', mode='rb') as afp:
             reference_bytes = await afp.read()
             async for status in ss.siapath_mirror(
-                    self.session, afp, ('siaslice_test_dir_abcd1234',), prior_map):
+                    self.session, afp, ['siaslice_test_dir_abcd1234'], prior_map):
                 pass
 
         async with AIOFile('test_download.img', 'wb') as afp:
             async for status in ss.siapath_download(
-                    self.session, afp, ('siaslice_test_dir_abcd1234',)):
+                    self.session, afp, ['siaslice_test_dir_abcd1234']):
                 pass
         with open('test_download.img', 'rb') as fp:
             download_bytes = fp.read()
@@ -134,12 +134,12 @@ class TestSiaOperations(asynctest.TestCase):
         async with AIOFile('40MiBempty.img', mode='rb') as afp:
             reference_bytes = await afp.read()
             async for status in ss.siapath_mirror(
-                    self.session, afp, ('siaslice_test_dir_abcd1234',), prior_map):
+                    self.session, afp, ['siaslice_test_dir_abcd1234'], prior_map):
                 pass
 
         async with AIOFile('test_download.img', 'wb') as afp:
             async for status in ss.siapath_download(
-                    self.session, afp, ('siaslice_test_dir_abcd1234',)):
+                    self.session, afp, ['siaslice_test_dir_abcd1234']):
                 pass
         with open('test_download.img', 'rb') as fp:
             download_bytes = fp.read()

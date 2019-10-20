@@ -10,7 +10,7 @@ class TestTaskGenerator(asynctest.TestCase):
         mock = asynctest.CoroutineMock()
         async def cor():
             await mock(1)
-        await ss.run_all_tasks(cor() for i in range(10))
+        await ss.await_all_tasks(cor() for i in range(10))
         mock.assert_has_awaits([asynctest.call(1)]*10)
 
     async def test_limit_concurrency(self,):
@@ -22,7 +22,7 @@ class TestTaskGenerator(asynctest.TestCase):
             await sleep(1)
             v = new_v
             await mock(v)
-        await ss.run_all_tasks(ss.limit_concurrency((cor() for i in range(10)), 1))
+        await ss.await_all_tasks(ss.limit_concurrency((cor() for i in range(10)), 1))
         mock.assert_has_awaits([asynctest.call(i) for i in range(1, 11)])
 
 

@@ -169,14 +169,14 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
                 await siad_post(session, b'', 'renter', 'rename',
                                 *(siapath + [f'{sianame}.part']),
                                 newsiapath='/'.join(siapath + [sianame]))
-                yield watch_upload(index, up_siapath)
+                yield watch_upload(index, siapath + [sianame])
             else:
                 block.compressed_bytes.cancel()
                 update.set()
         read_done = True
         update.set()
 
-    main_task = asyncio.create_task(run_all_tasks(do_reads()))
+    main_task = asyncio.create_task(await_all_tasks(do_reads()))
     last_block = int(os.stat(source_afp.fileno()).st_size//prior_map.block_size)
     while not read_done:
         yield OpStatus(transfers=uploads, current_index=current_index,
@@ -211,7 +211,7 @@ async def read_blocks(source_afp, prior_block_map, start_block):
             source_afp, chunk_size=block_size, offset=start_block*block_size)
     async for chunk in reader:
         block = Block(md5_hash=(await aiomd5(chunk)).hexdigest(),
-                      compressed_bytes=aiolzc(chunk))
+                      compressed_bytes=asyncio.create_task(aiolzc(chunk)))
         try:
             block_changed = block.md5_hash != prior_block_map.md5_hashes[index]
         except IndexError:
@@ -275,7 +275,7 @@ async def siapath_download(session, target_afp, siapath, start_block=0):
         def block_siapath(index, md5_hash):
             return siapath + [f'siaslice.{format_bs(block_map.block_size)}'
                               f'.{index}.{md5_hash}.lz']
-        await run_all_tasks(limit_concurrency(
+        await await_all_tasks(limit_concurrency(
                 (download(index, block_siapath(index, md5_hash))
                  for index, md5_hash in enumerate(md5_hashes) if md5_hash),
                 MAX_CONCURRENT_DOWNLOADS))
@@ -428,7 +428,7 @@ async def await_all_tasks(generator):
         nonlocal running, cv
         await the_cor
         running -= 1
-        with cv:
+        async with cv:
             cv.notify()
     if isinstance(generator, GeneratorType):
         for cor in generator:
@@ -440,7 +440,7 @@ async def await_all_tasks(generator):
             asyncio.create_task(finish_task(cor))
     else:
         raise ValueError(f'not a generator: {generator}')
-    with cv:
+    async with cv:
         await cv.wait_for(lambda: running == 0)
 
 
