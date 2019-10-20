@@ -163,10 +163,11 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
                         siapath + [f'siaslice.{format_bs(prior_map.block_size)}.'
                                    f'{index}.{block.md5_hash}.lz']
                 await siapath_delete_block(session, siapath, index)
-                await siad_post(session, BytesIO(block.compressed_bytes),
+                await siad_post(session, BytesIO(await block.compressed_bytes),
                                 'renter', 'uploadstream', *up_siapath)
                 asyncio.create_task(watch_upload(index, up_siapath))
             else:
+                block.compressed_bytes.cancel()
                 update.set()
         main_done = True
         update.set()
@@ -204,8 +205,8 @@ async def read_blocks(source_afp, prior_block_map, start_block):
     reader = aiofile.Reader(
             source_afp, chunk_size=block_size, offset=start_block*block_size)
     async for chunk in reader:
-        md5_hash, lz_bytes = await asyncio.gather(aiomd5(chunk), aiolzc(chunk))
-        block = Block(md5_hash=md5_hash.hexdigest(), compressed_bytes=lz_bytes)
+        block = Block(md5_hash=(await aiomd5(chunk)).hexdigest(),
+                      compressed_bytes=aiolzc(chunk))
         try:
             block_changed = block.md5_hash != prior_block_map.md5_hashes[index]
         except IndexError:
