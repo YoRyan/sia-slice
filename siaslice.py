@@ -140,7 +140,7 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
         uploads[index] = 0.0
         update.set()
         up_status = {}
-        while up_status.get('uploadprogress', 0) < 100:
+        while not up_status.get('available', False):
             up_status = (await siad_json(await siad_get(
                     session, 'renter', 'file', *up_siapath))).get('file', {})
             uploads[index] = up_status.get('uploadprogress', 0)/100.0
