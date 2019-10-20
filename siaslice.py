@@ -165,7 +165,7 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
                 await siapath_delete_block(session, siapath, index)
                 await siad_post(session, BytesIO(block.compressed_bytes),
                                 'renter', 'uploadstream', *up_siapath)
-                await watch_upload(index, up_siapath)
+                asyncio.create_task(watch_upload(index, up_siapath))
             else:
                 update.set()
         main_done = True
