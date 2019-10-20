@@ -156,7 +156,7 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
         async for index, block, change in \
                 read_blocks(source_afp, prior_map, start_block):
             current_index = index
-            if change or (index == start_block and start_block != 0):
+            if change or index == start_block:
                 uploads[index] = 0.0
                 update.set()
                 up_siapath = \
