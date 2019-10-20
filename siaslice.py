@@ -156,15 +156,19 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
         async for index, block, change in \
                 read_blocks(source_afp, prior_map, start_block):
             current_index = index
-            if change or index == start_block:
+            if change:
                 uploads[index] = 0.0
                 update.set()
-                up_siapath = \
-                        siapath + [f'siaslice.{format_bs(prior_map.block_size)}.'
-                                   f'{index}.{block.md5_hash}.lz']
+
+                sianame = (f'siaslice.{format_bs(prior_map.block_size)}.'
+                           f'{index}.{block.md5_hash}.lz')
                 await siapath_delete_block(session, siapath, index)
-                await siad_post(session, BytesIO(await block.compressed_bytes),
-                                'renter', 'uploadstream', *up_siapath)
+                await siad_post(
+                        session, BytesIO(await block.compressed_bytes),
+                        'renter', 'uploadstream', *(siapath + [f'{sianame}.part']))
+                await siad_post(session, b'', 'renter', 'rename',
+                                *(siapath + [f'{sianame}.part']),
+                                newsiapath='/'.join(siapath + [sianame]))
                 yield watch_upload(index, up_siapath)
             else:
                 block.compressed_bytes.cancel()
@@ -192,7 +196,8 @@ async def siapath_delete_block(session, siapath, block_index):
                  for meta in (await siad_json(response)).get('files', []))
         for path in paths:
             match = re.search(
-                    rf'siaslice\.\d+MiB\.{block_index}\.[a-z\d]+\.lz$', path)
+                    rf'siaslice\.\d+MiB\.{block_index}\.[a-z\d]+\.lz(\.part)?$',
+                    path)
             if match:
                 await siad_post(session, b'', 'renter', 'delete', *path.split('/'))
     else:
