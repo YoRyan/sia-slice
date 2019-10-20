@@ -150,9 +150,9 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
             del uploads[index]
             update.set()
 
-    main_done = False
-    async def main():
-        nonlocal uploads, current_index, main_done, update
+    read_done = False
+    async def do_reads():
+        nonlocal uploads, current_index, update, read_done
         async for index, block, change in \
                 read_blocks(source_afp, prior_map, start_block):
             current_index = index
@@ -165,16 +165,16 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
                 await siapath_delete_block(session, siapath, index)
                 await siad_post(session, BytesIO(await block.compressed_bytes),
                                 'renter', 'uploadstream', *up_siapath)
-                asyncio.create_task(watch_upload(index, up_siapath))
+                yield watch_upload(index, up_siapath)
             else:
                 block.compressed_bytes.cancel()
                 update.set()
-        main_done = True
+        read_done = True
         update.set()
 
-    main_task = asyncio.create_task(main())
+    main_task = asyncio.create_task(run_all_tasks(do_reads()))
     last_block = int(os.stat(source_afp.fileno()).st_size//prior_map.block_size)
-    while not main_done:
+    while not read_done:
         yield OpStatus(transfers=uploads, current_index=current_index,
                        last_index=last_block)
         await update.wait()
@@ -270,10 +270,10 @@ async def siapath_download(session, target_afp, siapath, start_block=0):
         def block_siapath(index, md5_hash):
             return siapath + [f'siaslice.{format_bs(block_map.block_size)}'
                               f'.{index}.{md5_hash}.lz']
-        await run_all_tasks(
+        await run_all_tasks(limit_concurrency(
                 (download(index, block_siapath(index, md5_hash))
                  for index, md5_hash in enumerate(md5_hashes) if md5_hash),
-                max_concurrent=MAX_CONCURRENT_DOWNLOADS)
+                MAX_CONCURRENT_DOWNLOADS))
         main_done = True
         update.set()
 
@@ -394,32 +394,49 @@ async def siad_json(response):
     return json
 
 
-async def run_all_tasks(generator, max_concurrent=999):
-    sem = asyncio.BoundedSemaphore(value=max_concurrent)
+def limit_concurrency(generator, limit):
+    sem = asyncio.BoundedSemaphore(value=limit)
+    async def wrap_sync(the_gen):
+        nonlocal sem
+        for cor in the_gen:
+            await sem.acquire()
+            yield finish_task(cor)
+    async def wrap_async(the_gen):
+        nonlocal sem
+        async for cor in the_gen:
+            await sem.acquire()
+            yield finish_task(cor)
+    async def finish_task(the_cor):
+        nonlocal sem
+        await the_cor
+        sem.release()
+    if isinstance(generator, GeneratorType):
+        return wrap_sync(generator)
+    elif isinstance(generator, AsyncGeneratorType):
+        return wrap_async(generator)
+
+
+async def await_all_tasks(generator):
     running = 0
-    complete = asyncio.Event()
-    async def run_task(the_cor):
-        nonlocal running, sem, complete
+    cv = asyncio.Condition()
+    async def finish_task(the_cor):
+        nonlocal running, cv
         await the_cor
         running -= 1
-        sem.release()
-        complete.set()
+        with cv:
+            cv.notify()
     if isinstance(generator, GeneratorType):
         for cor in generator:
-            await sem.acquire()
             running += 1
-            asyncio.create_task(run_task(cor))
+            asyncio.create_task(finish_task(cor))
     elif isinstance(generator, AsyncGeneratorType):
         async for cor in generator:
-            await sem.acquire()
             running += 1
-            asyncio.create_task(run_task(cor))
+            asyncio.create_task(finish_task(cor))
     else:
         raise ValueError(f'not a generator: {generator}')
-
-    while running > 0:
-        await complete.wait()
-        complete.clear()
+    with cv:
+        await cv.wait_for(lambda: running == 0)
 
 
 if __name__ == '__main__':
