@@ -1,6 +1,5 @@
-from lzma import compress
 from hashlib import md5
-from io import BytesIO
+from lzma import compress
 
 import aiofile
 import asynctest

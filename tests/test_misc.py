@@ -1,5 +1,5 @@
-from lzma import compress
 from asyncio import sleep
+from lzma import compress
 
 import asynctest
 

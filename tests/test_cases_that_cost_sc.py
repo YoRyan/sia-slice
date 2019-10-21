@@ -1,7 +1,4 @@
 import os
-import re
-from asyncio import sleep
-from io import BytesIO
 from lzma import compress
 
 import asynctest

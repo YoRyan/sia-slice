@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-import curses
 from time import sleep
+
+from curses import wrapper
 
 import siaslice as ss
 
@@ -17,5 +18,5 @@ if __name__ == '__main__':
                               current_index=5, last_index=20)
         ss.show_status(stdscr, status2, title='progress screen mockup #2')
         sleep(5)
-    curses.wrapper(test)
+    wrapper(test)
 
