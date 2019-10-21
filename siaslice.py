@@ -422,26 +422,25 @@ def limit_concurrency(generator, limit):
 
 
 async def await_all_tasks(generator):
-    running = 0
-    cv = asyncio.Condition()
-    async def finish_task(the_cor):
-        nonlocal running, cv
-        await the_cor
-        running -= 1
-        async with cv:
-            cv.notify()
     if isinstance(generator, GeneratorType):
-        for cor in generator:
-            running += 1
-            asyncio.create_task(finish_task(cor))
+        await asyncio.gather(*generator)
     elif isinstance(generator, AsyncGeneratorType):
+        running = 0
+        cv = asyncio.Condition()
+
+        async def finish_task(the_cor):
+            nonlocal running, cv
+            await the_cor
+            running -= 1
+            async with cv:
+                cv.notify()
         async for cor in generator:
             running += 1
             asyncio.create_task(finish_task(cor))
+        async with cv:
+            await cv.wait_for(lambda: running == 0)
     else:
         raise ValueError(f'not a generator: {generator}')
-    async with cv:
-        await cv.wait_for(lambda: running == 0)
 
 
 if __name__ == '__main__':
