@@ -9,8 +9,8 @@ from argparse import ArgumentParser
 from collections import namedtuple
 from datetime import datetime
 from hashlib import md5
-from io import BytesIO
-from lzma import compress, LZMADecompressor
+from io import IOBase
+from lzma import LZMACompressor, LZMADecompressor
 from types import AsyncGeneratorType, GeneratorType
 
 import aiofile
@@ -20,14 +20,13 @@ from defaultlist import defaultlist
 
 
 aiomd5 = aioify(obj=md5)
-aiolzc = aioify(obj=compress)
 
 BLOCK_MB = 100
 MAX_CONCURRENT_DOWNLOADS = 10
 USER_AGENT = 'Sia-Agent'
 
 BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
-Block = namedtuple('Block', ['md5_hash', 'compressed_bytes'])
+Block = namedtuple('Block', ['md5_hash', 'lzma_reader'])
 OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
 
 class SiadError(Exception):
@@ -49,6 +48,45 @@ class SiadSession():
                 timeout=aiohttp.ClientTimeout(total=None))
     async def close(self):
         await self.client.close()
+
+class LZMACompressReader(IOBase):
+    CHUNK_SZ = 500*1000
+    def __init__(self, data):
+        self._data = data
+        self._lzdata = b''
+        self._dataptr = self._lzptr = 0
+        self._compressor = LZMACompressor()
+    def readable(self):
+        return True
+    def _compress(self):
+        if self._dataptr >= len(self._data):
+            try:
+                self._lzdata += self._compressor.flush()
+            except ValueError:
+                raise EOFError
+        else:
+            self._lzdata += self._compressor.compress(
+                    self._data[self._dataptr:
+                               self._dataptr + LZMACompressReader.CHUNK_SZ])
+            self._dataptr += LZMACompressReader.CHUNK_SZ
+    def read(self, size=-1):
+        if size < 0:
+            while True:
+                try:
+                    self._compress()
+                except EOFError:
+                    lzdata = self._lzdata[self._lzptr:]
+                    self._lzptr = len(self._lzdata)
+                    return lzdata
+        else:
+            while len(self._lzdata) < self._lzptr + size:
+                try:
+                    self._compress()
+                except EOFError:
+                    break
+            lzdata = self._lzdata[self._lzptr:self._lzptr + size]
+            self._lzptr += size
+            return lzdata
 
 
 def main():
@@ -163,15 +201,13 @@ async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0)
                 sianame = (f'siaslice.{format_bs(prior_map.block_size)}.'
                            f'{index}.{block.md5_hash}.lz')
                 await siapath_delete_block(session, siapath, index)
-                await siad_post(
-                        session, BytesIO(await block.compressed_bytes),
-                        'renter', 'uploadstream', *(siapath + [f'{sianame}.part']))
+                await siad_post(session, block.lzma_reader, 'renter',
+                                'uploadstream', *(siapath + [f'{sianame}.part']))
                 await siad_post(session, b'', 'renter', 'rename',
                                 *(siapath + [f'{sianame}.part']),
                                 newsiapath='/'.join(siapath + [sianame]))
                 yield watch_upload(index, siapath + [sianame])
             else:
-                block.compressed_bytes.cancel()
                 update.set()
         read_done = True
         update.set()
@@ -211,7 +247,7 @@ async def read_blocks(source_afp, prior_block_map, start_block):
             source_afp, chunk_size=block_size, offset=start_block*block_size)
     async for chunk in reader:
         block = Block(md5_hash=(await aiomd5(chunk)).hexdigest(),
-                      compressed_bytes=asyncio.create_task(aiolzc(chunk)))
+                      lzma_reader=LZMACompressReader(chunk))
         try:
             block_changed = block.md5_hash != prior_block_map.md5_hashes[index]
         except IndexError:

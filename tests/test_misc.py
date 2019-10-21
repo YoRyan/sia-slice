@@ -1,5 +1,7 @@
-import asynctest
+from lzma import compress
 from asyncio import sleep
+
+import asynctest
 
 import siaslice as ss
 
@@ -24,6 +26,23 @@ class TestTaskGenerator(asynctest.TestCase):
             await mock(v)
         await ss.await_all_tasks(ss.limit_concurrency((cor() for i in range(10)), 1))
         mock.assert_has_awaits([asynctest.call(i) for i in range(1, 11)])
+
+
+class TestLZMA(asynctest.TestCase):
+
+    def test_reader(self):
+        data = b'The quick brown fox jumps over the brown lazy dog.'
+        data_lz = compress(data)
+
+        readback = b''
+        reader = ss.LZMACompressReader(data)
+        while True:
+            chunk = reader.read(4)
+            if chunk:
+                readback += chunk
+            else:
+                break
+        self.assertEqual(data_lz, readback)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
-import lzma
+from lzma import compress
 from hashlib import md5
+from io import BytesIO
 
 import aiofile
 import asynctest
@@ -14,40 +15,39 @@ class BaseTestCases:
         async def setUp(self):
             await self.afp.open()
             reader = aiofile.Reader(self.afp, chunk_size=self.block_size)
-            self.blocks = [ss.Block(md5_hash=md5(chunk).hexdigest(),
-                                          compressed_bytes=lzma.compress(chunk))
-                           async for chunk in reader]
+            self.md5_hashes = []
+            self.compressed = []
+            async for chunk in reader:
+                self.md5_hashes.append(md5(chunk).hexdigest())
+                self.compressed.append(compress(chunk))
 
         async def test_initial_upload(self):
             prior_map = ss.BlockMap(
                     block_size=self.block_size, md5_hashes=[])
-            async for index, ablock, change in ss.read_blocks(
+            async for index, block, change in ss.read_blocks(
                     self.afp, prior_map, 0):
-                block = ss.Block(md5_hash=ablock.md5_hash,
-                                 compressed_bytes=await ablock.compressed_bytes)
-                self.assertEqual(block, self.blocks[index])
+                self.assertEqual(block.md5_hash, self.md5_hashes[index])
+                self.assertEqual(block.lzma_reader.read(), self.compressed[index])
                 self.assertTrue(change)
 
         async def test_all_change(self):
             prior_map = ss.BlockMap(
                     block_size=self.block_size, md5_hashes=['x']*4)
-            async for index, ablock, change in ss.read_blocks(
+            async for index, block, change in ss.read_blocks(
                     self.afp, prior_map, 0):
-                block = ss.Block(md5_hash=ablock.md5_hash,
-                                 compressed_bytes=await ablock.compressed_bytes)
-                self.assertEqual(block, self.blocks[index])
+                self.assertEqual(block.md5_hash, self.md5_hashes[index])
+                self.assertEqual(block.lzma_reader.read(), self.compressed[index])
                 self.assertTrue(change)
 
         async def test_partial_change(self):
             prior_map = ss.BlockMap(
                     block_size=self.block_size,
-                    md5_hashes=[self.blocks[0].md5_hash, 'x',
-                                'x', self.blocks[3].md5_hash])
-            async for index, ablock, change in ss.read_blocks(
+                    md5_hashes=[self.md5_hashes[0], 'x',
+                                'x', self.md5_hashes[3]])
+            async for index, block, change in ss.read_blocks(
                     self.afp, prior_map, 0):
-                block = ss.Block(md5_hash=ablock.md5_hash,
-                                 compressed_bytes=await ablock.compressed_bytes)
-                self.assertEqual(block, self.blocks[index])
+                self.assertEqual(block.md5_hash, self.md5_hashes[index])
+                self.assertEqual(block.lzma_reader.read(), self.compressed[index])
                 if index == 1 or index == 2:
                     self.assertTrue(change)
                 else:
@@ -55,24 +55,21 @@ class BaseTestCases:
 
         async def test_no_change(self):
             prior_map = ss.BlockMap(
-                    block_size=self.block_size,
-                    md5_hashes=[block.md5_hash for block in self.blocks])
-            async for index, ablock, change in ss.read_blocks(
+                    block_size=self.block_size, md5_hashes=self.md5_hashes)
+            async for index, block, change in ss.read_blocks(
                     self.afp, prior_map, 0):
-                block = ss.Block(md5_hash=ablock.md5_hash,
-                                 compressed_bytes=await ablock.compressed_bytes)
-                self.assertEqual(block, self.blocks[index])
+                self.assertEqual(block.md5_hash, self.md5_hashes[index])
+                self.assertEqual(block.lzma_reader.read(), self.compressed[index])
                 self.assertFalse(change)
 
         async def test_offset_start(self):
             prior_map = ss.BlockMap(
                     block_size=self.block_size,
-                    md5_hashes=(['x']*3 + [self.blocks[3].md5_hash]))
-            async for index, ablock, change in ss.read_blocks(
+                    md5_hashes=(['x']*3 + [self.md5_hashes[3]]))
+            async for index, block, change in ss.read_blocks(
                     self.afp, prior_map, 2):
-                block = ss.Block(md5_hash=ablock.md5_hash,
-                                 compressed_bytes=await ablock.compressed_bytes)
-                self.assertEqual(block, self.blocks[index])
+                self.assertEqual(block.md5_hash, self.md5_hashes[index])
+                self.assertEqual(block.lzma_reader.read(), self.compressed[index])
                 if index == 2:
                     self.assertTrue(change)
                 else:
