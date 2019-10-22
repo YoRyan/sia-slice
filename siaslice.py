@@ -312,7 +312,8 @@ async def siapath_mirror(storage, source_afp, start_block=0):
             await storage.update()
             async with status:
                 transfers = {index: bf.upload_progress for index, bf
-                             in storage.block_files.items() if not bf.complete}
+                             in storage.block_files.items()
+                             if not bf.complete or bf.partial}
                 uploads_done = transfers == {}
                 status.notify()
 
