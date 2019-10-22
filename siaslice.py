@@ -348,7 +348,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
 
     # Trim extraneous blocks in the event of a shrunken source.
     # Can be *dangerous* if the user made a mistake, so wait a minute first.
-    trim_indices = (index for index in source.block_files.keys()
+    trim_indices = (index for index in storage.block_files.keys()
                     if index > current_index)
     to_trim = next(trim_indices, None)
     if to_trim is not None:
