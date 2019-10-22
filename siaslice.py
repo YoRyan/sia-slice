@@ -7,7 +7,6 @@ import pickle
 import re
 from argparse import ArgumentParser
 from collections import namedtuple
-from datetime import datetime
 from hashlib import md5
 from io import IOBase
 from lzma import LZMACompressor, LZMADecompressor
@@ -15,18 +14,15 @@ from types import AsyncGeneratorType, GeneratorType
 
 import aiofile
 import aiohttp
+import pendulum
 from aioify import aioify
-from defaultlist import defaultlist
 
 
 aiomd5 = aioify(obj=md5)
 
 BLOCK_MB = 100
-MAX_CONCURRENT_DOWNLOADS = 10
-USER_AGENT = 'Sia-Agent'
+TRANSFER_STALLED_MIN = 3*60
 
-BlockMap = namedtuple('BlockMap', ['block_size', 'md5_hashes'])
-Block = namedtuple('Block', ['md5_hash', 'lzma_reader'])
 OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
 
 class SiadError(Exception):
@@ -38,37 +34,149 @@ class SiadError(Exception):
     def __repr__(self):
         return self.__str__()
 
+
 class SiadSession():
+    USER_AGENT = 'Sia-Agent'
+    MAX_CONCURRENT_UPLOADS = 1
+    MAX_CONCURRENT_DOWNLOADS = 10
+    CHUNK_SZ = 500*1000
+
     def __init__(self, domain, api_password):
-        self.domain = domain
-        self.api_password = api_password
+        self._client = None
+        self._domain = domain
+        self._api_password = api_password
+        self._upload_sem = asyncio.BoundedSemaphore(
+                value=SiadSession.MAX_CONCURRENT_UPLOADS)
+        self._download_sem = asyncio.BoundedSemaphore(
+                value=SiadSession.MAX_CONCURRENT_DOWNLOADS)
+
     async def create(self):
-        self.client = aiohttp.ClientSession(
-                auth=aiohttp.BasicAuth('', password=self.api_password),
+        self._client = aiohttp.ClientSession(
+                auth=aiohttp.BasicAuth('', password=self._api_password),
                 timeout=aiohttp.ClientTimeout(total=None))
+
     async def close(self):
-        await self.client.close()
+        await self._client.close()
+
+    async def get(self, *path, **qs):
+        headers = {'User-Agent': SiadSession.USER_AGENT}
+        return await self._client.get(f"{self._domain}/{'/'.join(path)}",
+                                      params=qs, headers=headers)
+
+    async def post(self, data, *path, **qs):
+        headers = {'User-Agent': SiadSession.USER_AGENT}
+        return await self._client.post(f"{self._domain}/{'/'.join(path)}",
+                                       data=data, params=qs, headers=headers)
+
+    async def upload(self, siapath, data):
+        part_siapath = siapath[:-1] + (f'{siapath[-1]}.part',)
+        async with self._upload_sem:
+            await self.post(data, 'renter', 'uploadstream', *part_siapath)
+            await self.post(b'', 'renter', 'rename',
+                            *part_siapath, newsiapath=format_sp(siapath))
+
+    async def download(self, siapath):
+        async with self._download_sem:
+            response = await self.get('renter', 'stream', *siapath)
+            while True:
+                chunk = await response.content.read(SiadSession.CHUNK_SZ)
+                if chunk:
+                    yield chunk
+                else:
+                    break
+
+
+class SiapathStorage():
+    _BlockFile = namedtuple('_BlockFile', ['siapath', 'md5_hash', 'size', 'partial',
+                                           'complete', 'stalled', 'upload_progress'])
+
+    def __init__(self, session, *siapath, default_block_size=BLOCK_MB*1000*1000):
+        self._session = session
+        self._siapath = siapath
+        self.block_size = default_block_size
+        self.block_files = {}
+
+    async def update(self):
+        response = await self._session.get('renter', 'dir', *self._siapath)
+        if response.status == 500: # nonexistent directory
+            self.block_files = {}
+        elif response.status == 200:
+            siafiles = (await siad_json(response)).get('files', [])
+            block_size = None
+            block_files = {}
+            for siafile in siafiles:
+                file_match = re.search(
+                        r'/siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz(\.part)?$',
+                        siafile['siapath'])
+                if not file_match:
+                    continue
+
+                file_index = int(file_match.group(2))
+                if file_index in block_files:
+                    raise ValueError(f'duplicate files found for block {file_index}')
+
+                file_block_size = int(file_match.group(1))*1000*1000
+                if not block_size:
+                    block_size = file_block_size
+                elif block_size != file_block_size:
+                    raise ValueError(
+                            f'inconsistent block sizes at {siafile.siapath} - '
+                            f'found {file_block_size}B, expected {block_size}B')
+
+                file_md5_hash = file_match.group(3)
+                file_partial = file_match.group(4) is not None
+
+                file_age = pendulum.now() - pendulum.parse(siafile['createtime'])
+                block_files[file_index] = SiapathStorage._BlockFile(
+                        siapath=tuple(siafile['siapath'].split('/')),
+                        md5_hash=file_md5_hash,
+                        size=siafile['filesize'],
+                        partial=file_partial,
+                        complete=siafile['available'],
+                        stalled=(not siafile['available']
+                                 and file_age.minutes >= TRANSFER_STALLED_MIN),
+                        upload_progress=siafile['uploadprogress']/100.0)
+            self.block_files = block_files
+        else:
+            raise NotADirectoryError
+
+    async def delete(self, index):
+        if index in self.block_files:
+            siapath = self.block_files[index].siapath
+            await self._session.post(b'', 'renter', 'delete', *siapath)
+        await self.update()
+
+    async def upload(self, index, data):
+        md5_hash = (await aiomd5(data)).hexdigest()
+        filename = f'siaslice.{format_bs(self.block_size)}.{index}.{md5_hash}.lz'
+        await self._session.upload(self._siapath + (filename,),
+                                   LZMACompressReader(data))
+        await self.update()
+
+    async def download(self, index):
+        await self.update()
+        if index not in self.block_files:
+            raise FileNotFoundError
+        block_file = self.block_files[index]
+        if block_file.partial or not block_file.complete:
+            raise FileNotFoundError
+
+        alzd = aioify(obj=LZMADecompressor().decompress)
+        async for chunk in self._session.download(block_file.siapath):
+            yield alzd(chunk)
+
 
 class LZMACompressReader(IOBase):
     CHUNK_SZ = 500*1000
+
     def __init__(self, data):
         self._data = data
         self._lzdata = b''
         self._dataptr = self._lzptr = 0
         self._compressor = LZMACompressor()
+
     def readable(self):
         return True
-    def _compress(self):
-        if self._dataptr >= len(self._data):
-            try:
-                self._lzdata += self._compressor.flush()
-            except ValueError:
-                raise EOFError
-        else:
-            self._lzdata += self._compressor.compress(
-                    self._data[self._dataptr:
-                               self._dataptr + LZMACompressReader.CHUNK_SZ])
-            self._dataptr += LZMACompressReader.CHUNK_SZ
     def read(self, size=-1):
         if size < 0:
             while True:
@@ -85,8 +193,20 @@ class LZMACompressReader(IOBase):
                 except EOFError:
                     break
             lzdata = self._lzdata[self._lzptr:self._lzptr + size]
-            self._lzptr += size
+            self._lzptr = min(len(self._lzdata), self._lzptr + size)
             return lzdata
+
+    def _compress(self):
+        if self._dataptr >= len(self._data):
+            try:
+                self._lzdata += self._compressor.flush()
+            except ValueError:
+                raise EOFError
+        else:
+            self._lzdata += self._compressor.compress(
+                    self._data[self._dataptr:
+                               self._dataptr + LZMACompressReader.CHUNK_SZ])
+            self._dataptr += LZMACompressReader.CHUNK_SZ
 
 
 def main():
@@ -121,11 +241,11 @@ async def amain(stdscr, args):
         if not args.siapath:
             raise ValueError('no siapath specified')
         async def validate_sp(sp):
-            response = await siad_post(session, b'', 'renter', 'validatesiapath', sp)
+            response = await session.post(b'', 'renter', 'validatesiapath', sp)
             return response.status == 204
         if not await validate_sp(args.siapath):
             raise ValueError(f'invalid siapath: {args.siapath}')
-        return args.siapath.split('/')
+        return tuple(args.siapath.split('/'))
     if args.mirror:
         await do_mirror(stdscr, session, args.file, await siapath())
     elif args.download:
@@ -148,18 +268,19 @@ async def amain(stdscr, args):
 
 
 async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
-    prior_map = await siapath_block_map(session, siapath)
-    state_file = f"siaslice-mirror-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
+    state_file = f"siaslice-mirror-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
+
     source_afp = aiofile.AIOFile(source_file, mode='rb')
     await source_afp.open()
-    async for status in siapath_mirror(session, source_afp, siapath, prior_map,
-                                       start_block=start_block):
+    storage = SiapathStorage(session, *siapath)
+    await storage.update()
+
+    async for status in siapath_mirror(storage, source_afp, start_block=start_block):
         await state_afp.write(pickle.dumps({
                 'source_file': source_file,
                 'siapath': siapath,
-                'block_size': prior_map.block_size,
                 'current_index': status.current_index}))
         await state_afp.fsync()
         show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
@@ -168,92 +289,71 @@ async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
     os.remove(state_file)
 
 
-async def siapath_mirror(session, source_afp, siapath, prior_map, start_block=0):
-    uploads = {}
-    current_index = start_block
-    update = asyncio.Event()
+async def siapath_mirror(storage, source_afp, start_block=0):
+    current_index = 0
+    transfers = {}
+    status = asyncio.Condition()
 
-    async def watch_upload(index, up_siapath):
-        nonlocal uploads, update
-        uploads[index] = 0.0
-        update.set()
-        up_status = {}
-        while not up_status.get('available', False):
-            up_status = (await siad_json(await siad_get(
-                    session, 'renter', 'file', *up_siapath))).get('file', {})
-            uploads[index] = up_status.get('uploadprogress', 0)/100.0
-            update.set()
-            await asyncio.sleep(2)
-        else:
-            del uploads[index]
-            update.set()
+    async def linear_read():
+        nonlocal status, current_index
+        index = start_block
+        reader = aiofile.Reader(source_afp, chunk_size=storage.block_size,
+                                offset=start_block*storage.block_size)
+        async for chunk in reader:
+            async with status:
+                current_index = index
+                status.notify()
+            md5_hash = (await aiomd5(chunk)).hexdigest()
+            if (index not in storage.block_files
+                    or storage.block_files[index].md5_hash != md5_hash
+                    or storage.block_files[index].partial):
+                await storage.delete(index)
+                await storage.upload(index, chunk)
+            index += 1
 
-    read_done = False
-    async def do_reads():
-        nonlocal uploads, current_index, update, read_done
-        async for index, block, change in \
-                read_blocks(source_afp, prior_map, start_block):
-            current_index = index
-            if change:
-                uploads[index] = 0.0
-                update.set()
+    async def watch_storage():
+        nonlocal status, transfers, reupload, read_task
+        REUPLOAD_TIME = 5*60
+        reupload_task = None
+        uploads_done = False
+        while True:
+            await asyncio.sleep(5)
+            await storage.update()
+            async with status:
+                transfers = {index: bf.upload_progress for index, bf
+                             in storage.block_files.items() if not bf.complete}
+                uploads_done = transfers == {}
+                status.notify()
 
-                sianame = (f'siaslice.{format_bs(prior_map.block_size)}.'
-                           f'{index}.{block.md5_hash}.lz')
-                await siapath_delete_block(session, siapath, index)
-                await siad_post(session, block.lzma_reader, 'renter',
-                                'uploadstream', *(siapath + [f'{sianame}.part']))
-                await siad_post(session, b'', 'renter', 'rename',
-                                *(siapath + [f'{sianame}.part']),
-                                newsiapath='/'.join(siapath + [sianame]))
-                yield watch_upload(index, siapath + [sianame])
-            else:
-                update.set()
-        read_done = True
-        update.set()
+            if reupload_task is None or reupload_task.done():
+                if reupload_task is not None:
+                    await reupload_task
+                stalled_upload = next(
+                        (index for index, bf in storage.block_files.items()
+                         if bf.stalled), None)
+                if stalled_upload is not None:
+                    reupload_task = asyncio.create_task(reupload(stalled_upload))
+                elif uploads_done and read_task.done():
+                    async with status:
+                        status.notify()
+                    break
 
-    main_task = asyncio.create_task(await_all_tasks(do_reads()))
-    last_block = int(os.stat(source_afp.fileno()).st_size//prior_map.block_size)
-    while not read_done:
-        yield OpStatus(transfers=uploads, current_index=current_index,
-                       last_index=last_block)
-        await update.wait()
-        update.clear()
-    else:
-        await main_task
+    async def reupload(index):
+        chunk = await source_afp.read(storage.block_size,
+                                      offset=index*storage.block_size)
+        await storage.delete(index)
+        await storage.upload(index, chunk)
 
-
-async def siapath_delete_block(session, siapath, block_index):
-    response = await siad_get(session, 'renter', 'dir', *siapath)
-    if response.status == 500: # nonexistent directory
-        pass
-    elif response.status == 200:
-        paths = (meta['siapath']
-                 for meta in (await siad_json(response)).get('files', []))
-        for path in paths:
-            match = re.search(
-                    rf'siaslice\.\d+MiB\.{block_index}\.[a-z\d]+\.lz(\.part)?$',
-                    path)
-            if match:
-                await siad_post(session, b'', 'renter', 'delete', *path.split('/'))
-    else:
-        raise ValueError(f"{format_sp(siapath)} is a file, not a directory")
-
-
-async def read_blocks(source_afp, prior_block_map, start_block):
-    block_size = prior_block_map.block_size
-    index = start_block
-    reader = aiofile.Reader(
-            source_afp, chunk_size=block_size, offset=start_block*block_size)
-    async for chunk in reader:
-        block = Block(md5_hash=(await aiomd5(chunk)).hexdigest(),
-                      lzma_reader=LZMACompressReader(chunk))
-        try:
-            block_changed = block.md5_hash != prior_block_map.md5_hashes[index]
-        except IndexError:
-            block_changed = True
-        yield (index, block, block_changed)
-        index += 1
+    read_task = asyncio.create_task(linear_read())
+    watch_task = asyncio.create_task(watch_storage())
+    last_block = int(os.stat(source_afp.fileno()).st_size//storage.block_size)
+    async with status:
+        while not watch_task.done():
+            await status.wait()
+            yield OpStatus(transfers=transfers, last_index=last_block,
+                           current_index=current_index)
+    await read_task
+    await watch_task
 
 
 async def do_download(stdscr, session, target_file, siapath, start_block=0):
@@ -329,54 +429,6 @@ async def siapath_download(session, target_afp, siapath, start_block=0):
         await main_task
 
 
-async def siapath_block_map(
-        session, siapath, fallback_block_size=BLOCK_MB*1e3*1e3):
-    response = await siad_get(session, 'renter', 'dir', *siapath)
-    if response.status == 500: # nonexistent directory
-        return BlockMap(block_size=fallback_block_size, md5_hashes=[])
-    elif response.status == 200:
-        filenames = (meta['siapath'].split('/')[-1:][0]
-                     for meta in (await siad_json(response)).get('files', []))
-        block_size = fallback_block_size
-        hashes = defaultlist(lambda: '')
-        for filename in filenames:
-            # Extract block size, index, and MD5 hash from filename.
-            match = re.search(r'^siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz$',
-                              filename)
-            if not match:
-                continue
-            filename_block_size = int(match.group(1))*1e3*1e3
-            if not block_size:
-                if filename_block_size <= 0:
-                    raise ValueError(f'invalid block size: {filename}')
-                block_size = filename_block_size
-            elif block_size != filename_block_size:
-                raise ValueError(f'inconsistent block size: {filename} vs. '
-                                 f'{format_bs(siapath_block_size)}MiB')
-            filename_index = int(match.group(2))
-            filename_hash = match.group(3)
-
-            # Duplicate block indices should never happen.
-            if hashes[filename_index]:
-                raise IndexError(f'duplicate block: {filename}')
-            hashes[filename_index] = filename_hash
-
-        return BlockMap(block_size=block_size, md5_hashes=hashes)
-    else:
-        raise ValueError(f"{format_sp(siapath)} is a file, not a directory")
-
-
-async def siad_stream_lz(session, *siapath):
-    response = await siad_get(session, 'renter', 'stream', *siapath)
-    alzd = aioify(obj=LZMADecompressor().decompress)
-    while True:
-        chunk = await response.content.read(1*1000*1000)
-        if chunk:
-            yield alzd(chunk)
-        else:
-            break
-
-
 def format_bs(block_size):
     n = int(block_size/1e3/1e3)
     return f'{n}MiB'
@@ -413,18 +465,6 @@ def show_status(stdscr, status, title=''):
             stdscr.addstr(l + 1, 0, ' '*cols)
 
     stdscr.refresh()
-
-
-async def siad_get(session, *path, **qs):
-    url = f"{session.domain}/{'/'.join(path)}"
-    headers = { 'User-Agent': USER_AGENT }
-    return await session.client.get(url, params=qs, headers=headers)
-
-
-async def siad_post(session, post_data, *path, **qs):
-    url = f"{session.domain}/{'/'.join(path)}"
-    headers = { 'User-Agent': USER_AGENT }
-    return await session.client.post(url, data=post_data, params=qs, headers=headers)
 
 
 async def siad_json(response):

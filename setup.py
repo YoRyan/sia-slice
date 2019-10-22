@@ -10,7 +10,7 @@ setup(
         'aiofile',
         'aiohttp',
         'aioify',
-        'defaultlist'
+        'pendulum'
     ],
     entry_points={
         'console_scripts': [

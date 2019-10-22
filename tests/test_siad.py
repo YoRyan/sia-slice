@@ -19,13 +19,13 @@ class GetRequest(asynctest.TestCase):
         await self.session.close()
 
     async def test_version_check(self):
-        response = await ss.siad_get(self.session, 'daemon', 'version')
+        response = await self.session.get('daemon', 'version')
         self.assertEqual(response.status, 200)
         self.assertIn('version', await response.json())
 
     async def test_stream_nonexistent_file(self):
-        response = await ss.siad_get(self.session, 'renter', 'stream',
-                                     'siaslice_test_file_abcd1234')
+        response = await self.session.get('renter', 'stream',
+                                          'siaslice_test_file_abcd1234')
         self.assertEqual(response.status, 500)
         self.assertIn('message', await response.json())
 
@@ -40,15 +40,13 @@ class PostRequest(asynctest.TestCase):
         await self.session.close()
 
     async def test_valid_siapath(self):
-        response = await ss.siad_post(
-                self.session, b'', 'renter', 'validatesiapath',
-                'this', 'is', 'a', 'valid', '$iapath')
+        response = await self.session.post(b'', 'renter', 'validatesiapath',
+                                           'this', 'is', 'a', 'valid', '$iapath')
         self.assertEqual(response.status, 204)
         self.assertEqual(await response.text(), '')
 
     async def test_invalid_siapath(self):
-        response = await ss.siad_post(
-                self.session, b'', 'renter', 'validatesiapath', '')
+        response = await self.session.post(b'', 'renter', 'validatesiapath', '')
         self.assertEqual(response.status, 400)
         self.assertIn('message', await response.json())
 
