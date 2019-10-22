@@ -346,6 +346,17 @@ async def siapath_mirror(storage, source_afp, start_block=0):
     await read_task
     await watch_task
 
+    # Trim extraneous blocks in the event of a shrunken source.
+    # Can be *dangerous* if the user made a mistake, so wait a minute first.
+    trim_indices = (index for index in source.block_files.keys()
+                    if index > current_index)
+    to_trim = next(trim_indices, None)
+    if to_trim is not None:
+        await asyncio.sleep(60)
+        await storage.delete(to_trim)
+        for to_trim in trim_indices:
+            await storage.delete(to_trim)
+
 
 async def do_download(stdscr, session, target_file, siapath, start_block=0):
     state_file = f"siaslice-download-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
