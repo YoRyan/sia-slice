@@ -312,7 +312,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
             index += 1
 
     async def watch_storage():
-        nonlocal status, transfers, reupload, read_task
+        nonlocal status, transfers, current_index, reupload, read_task
         REUPLOAD_TIME = 5*60
         reupload_task = None
         uploads_done = False
@@ -330,7 +330,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
                     await reupload_task
                 stalled_upload = next(
                         (index for index, bf in storage.block_files.items()
-                         if bf.stalled), None)
+                         if bf.stalled and index < current_index), None)
                 if stalled_upload is not None:
                     reupload_task = asyncio.create_task(reupload(stalled_upload))
                 elif uploads_done and read_task.done():
