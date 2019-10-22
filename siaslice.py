@@ -363,17 +363,23 @@ async def do_download(stdscr, session, target_file, siapath, start_block=0):
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
 
-    target_afp = aiofile.AIOFile(target_file, mode='r+b')
-    await target_afp.open()
+    try:
+        target_afp = aiofile.AIOFile(target_file, mode='r+b')
+        await target_afp.open()
+    except FileNotFoundError:
+        target_afp = aiofile.AIOFile(target_file, mode='wb')
+        await target_afp.open()
     storage = SiapathStorage(session, *siapath)
+    await storage.update()
 
-    async for status in siapath_mirror(storage, target_afp, start_block=start_block):
+    async for status in siapath_download(storage, target_afp,
+                                         start_block=start_block):
         await state_afp.write(pickle.dumps({
                 'target_file': target_file,
                 'siapath': siapath,
                 'current_index': status.current_index}))
         await state_afp.fsync()
-        show_status(stdscr, status, title=f'{format_sp(siapath)} -> {source_file}')
+        show_status(stdscr, status, title=f'{format_sp(siapath)} -> {target_file}')
     target_afp.close()
     state_afp.close()
     os.remove(state_file)
