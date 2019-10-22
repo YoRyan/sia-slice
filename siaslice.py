@@ -388,19 +388,15 @@ async def do_download(stdscr, session, target_file, siapath, start_block=0):
 async def siapath_download(storage, target_afp, start_block=0):
     current_index = 0
     transfers = {}
-    finished = False
     status = asyncio.Condition()
 
     async def parallel_download():
-        nonlocal status, transfers, download, finished
+        nonlocal status, transfers, download
         for index, block_file in storage.block_files.items():
             async with status:
                 transfers[index] = 0.0
                 status.notify()
             yield download(index, block_file)
-        async with status:
-            finished = True
-            status.notify()
 
     async def download(index, block_file):
         nonlocal status, transfers, current_index
@@ -420,12 +416,18 @@ async def siapath_download(storage, target_afp, start_block=0):
     download_task = asyncio.create_task(await_all(limit_concurrency(
             (task async for task in parallel_download()),
             SiadSession.MAX_CONCURRENT_DOWNLOADS)))
+    async def wait_for_complete():
+        nonlocal status, download_task
+        await download_task
+        async with status:
+            status.notify()
+    wait_task = asyncio.create_task(wait_for_complete())
     async with status:
-        while not finished:
+        while not download_task.done():
             await status.wait()
             yield OpStatus(transfers=transfers, current_index=current_index,
                            last_index=len(storage.block_files) - 1)
-    await download_task
+    await wait_task
 
 
 def format_bs(block_size):
