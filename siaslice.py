@@ -25,15 +25,6 @@ TRANSFER_STALLED_MIN = 3*60
 
 OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
 
-class SiadError(Exception):
-    def __init__(self, status, message):
-        self.status = status
-        self.message = message
-    def __str__(self):
-        return f'<Sia: [{self.status}] {self.message}>'
-    def __repr__(self):
-        return self.__str__()
-
 
 class SiadSession():
     USER_AGENT = 'Sia-Agent'
@@ -101,7 +92,7 @@ class SiapathStorage():
         if response.status == 500: # nonexistent directory
             self.block_files = {}
         elif response.status == 200:
-            siafiles = (await siad_json(response)).get('files', [])
+            siafiles = (await response.json()).get('files', [])
             block_size = None
             block_files = {}
             for siafile in siafiles:
@@ -357,13 +348,15 @@ async def siapath_mirror(storage, source_afp, start_block=0):
 
 
 async def do_download(stdscr, session, target_file, siapath, start_block=0):
-    state_file = f"siaslice-download-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
+    state_file = f"siaslice-download-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
-    target_afp = aiofile.AIOFile(target_file, mode='wb')
+
+    target_afp = aiofile.AIOFile(target_file, mode='r+b')
     await target_afp.open()
-    async for status in siapath_download(session, target_afp, siapath,
-                                         start_block=start_block):
+    storage = SiapathStorage(session, *siapath)
+
+    async for status in siapath_mirror(storage, target_afp, start_block=start_block):
         await state_afp.write(pickle.dumps({
                 'target_file': target_file,
                 'siapath': siapath,
@@ -375,58 +368,43 @@ async def do_download(stdscr, session, target_file, siapath, start_block=0):
     os.remove(state_file)
 
 
-async def siapath_download(session, target_afp, siapath, start_block=0):
-    downloads = {}
-    current_index = start_block
-    update = asyncio.Event()
+async def siapath_download(storage, target_afp, start_block=0):
+    current_index = 0
+    transfers = {}
+    status = asyncio.Condition()
 
-    block_map = await siapath_block_map(session, siapath)
-    md5_hashes = block_map.md5_hashes[start_block:]
+    async def parallel_download():
+        nonlocal status, transfers
+        for index, block_file in storage.block_files:
+            async with status:
+                transfers[index] = 0.0
+                status.notify()
+            yield download(index, block_file)
 
-    async def download(index, block_siapath):
-        nonlocal block_map, downloads, current_index
-        info = (await siad_json(await siad_get(
-                session, 'renter', 'file', *block_siapath))).get('file', {})
-        filesize = info.get('filesize', 0)
+    async def download(index, block_file):
+        nonlocal status, transfers, current_index
         written = 0
-        async for chunk in siad_stream_lz(session, *block_siapath):
-            await target_afp.write(
-                    chunk, offset=(index*block_map.block_size + written))
+        async for chunk in storage.download(index):
+            await target_afp.write(chunk, offset=index*storage.block_size + written)
             written += len(chunk)
+            async with status:
+                transfers[index] = (written/block_file.size
+                                    if block_file.size > 0 else 0.0)
+                status.notify()
+        async with status:
+            del transfers[index]
+            current_index = min(transfers.keys()) if transfers != {} else index
+            status.notify()
 
-            if filesize > 0:
-                downloads[index] = written/filesize
-            else:
-                downloads[index] = 0.0
-            update.set()
-
-        if index in downloads:
-            del downloads[index]
-        current_index = min(current_index, index)
-        update.set()
-
-    main_done = False
-    async def main():
-        nonlocal download, md5_hashes, main_done, update
-        def block_siapath(index, md5_hash):
-            return siapath + [f'siaslice.{format_bs(block_map.block_size)}'
-                              f'.{index}.{md5_hash}.lz']
-        await await_all_tasks(limit_concurrency(
-                (download(index, block_siapath(index, md5_hash))
-                 for index, md5_hash in enumerate(md5_hashes) if md5_hash),
-                MAX_CONCURRENT_DOWNLOADS))
-        main_done = True
-        update.set()
-
-    main_task = asyncio.create_task(main())
-    last_block = len(block_map.md5_hashes) - 1
-    while not main_done:
-        yield OpStatus(transfers=downloads, current_index=current_index,
-                       last_index=last_block)
-        await update.wait()
-        update.clear()
-    else:
-        await main_task
+    download_task = asyncio.create_task(await_all(limit_concurrency(
+            (task async for task in parallel_download()),
+            SiadSession.MAX_CONCURRENT_DOWNLOADS)))
+    async with status:
+        while not download_task.done():
+            await status.wait()
+            yield OpStatus(transfers=transfers, current_index=current_index,
+                           last_index=len(storage.block_files) - 1)
+    await download_task
 
 
 def format_bs(block_size):
@@ -467,14 +445,6 @@ def show_status(stdscr, status, title=''):
     stdscr.refresh()
 
 
-async def siad_json(response):
-    json = await response.json()
-    status = response.status
-    if (status >= 400 and status <= 499) or (status >= 500 and status <= 599):
-        raise SiadError(status, json.get('message'))
-    return json
-
-
 def limit_concurrency(generator, limit):
     sem = asyncio.BoundedSemaphore(value=limit)
     async def wrap_sync(the_gen):
@@ -497,7 +467,7 @@ def limit_concurrency(generator, limit):
         return wrap_async(generator)
 
 
-async def await_all_tasks(generator):
+async def await_all(generator):
     if isinstance(generator, GeneratorType):
         await asyncio.gather(*generator)
     elif isinstance(generator, AsyncGeneratorType):

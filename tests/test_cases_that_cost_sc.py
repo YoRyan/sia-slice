@@ -84,51 +84,43 @@ class TestSiaOperations(asynctest.TestCase):
         await storage.delete(1)
 
     async def test_sia_download_1_block(self):
-        prior_map = ss.BlockMap(block_size=40*1000*1000, md5_hashes=[])
+        storage = ss.SiapathStorage(self.session, TestSiaOperations.TEST_DIR,
+                                    default_block_size=40*1000*1000)
+        await storage.update()
         async with AIOFile('40MiBempty.img', mode='rb') as afp:
-            reference_bytes = await afp.read()
-            async for status in ss.siapath_mirror(
-                    self.session, afp, [TestSiaOperations.TEST_DIR], prior_map):
+            reference = await afp.read()
+            async for status in ss.siapath_mirror(storage, afp):
                 pass
 
         async with AIOFile('test_download.img', 'wb') as afp:
-            async for status in ss.siapath_download(
-                    self.session, afp, [TestSiaOperations.TEST_DIR]):
+            async for status in ss.siapath_download(storage, afp):
                 pass
         with open('test_download.img', 'rb') as fp:
-            download_bytes = fp.read()
+            downloaded = fp.read()
         os.remove('test_download.img')
+        self.assertEqual(downloaded, reference)
 
-        self.assertEqual(download_bytes, reference_bytes)
-
-        await ss.siad_post(
-                self.session, b'', 'renter', 'delete', TestSiaOperations.TEST_DIR,
-                'siaslice.40MiB.0.48e9a108a3ec623652e7988af2f88867.lz')
+        await storage.delete(0)
 
     async def test_sia_download_2_blocks(self):
-        prior_map = ss.BlockMap(block_size=20*1000*1000, md5_hashes=[])
+        storage = ss.SiapathStorage(self.session, TestSiaOperations.TEST_DIR,
+                                    default_block_size=20*1000*1000)
+        await storage.update()
         async with AIOFile('40MiBempty.img', mode='rb') as afp:
-            reference_bytes = await afp.read()
-            async for status in ss.siapath_mirror(
-                    self.session, afp, [TestSiaOperations.TEST_DIR], prior_map):
+            reference = await afp.read()
+            async for status in ss.siapath_mirror(storage, afp):
                 pass
 
         async with AIOFile('test_download.img', 'wb') as afp:
-            async for status in ss.siapath_download(
-                    self.session, afp, [TestSiaOperations.TEST_DIR]):
+            async for status in ss.siapath_download(storage, afp):
                 pass
         with open('test_download.img', 'rb') as fp:
-            download_bytes = fp.read()
+            downloaded = fp.read()
         os.remove('test_download.img')
+        self.assertEqual(downloaded, reference)
 
-        self.assertEqual(download_bytes, reference_bytes)
-
-        await ss.siad_post(
-                self.session, b'', 'renter', 'delete', TestSiaOperations.TEST_DIR,
-                'siaslice.20MiB.0.10e4462c9d0b08e7f0b304c4fbfeafa3.lz')
-        await ss.siad_post(
-                self.session, b'', 'renter', 'delete', TestSiaOperations.TEST_DIR,
-                'siaslice.20MiB.1.10e4462c9d0b08e7f0b304c4fbfeafa3.lz')
+        await storage.delete(0)
+        await storage.delete(1)
 
 
 if __name__ == '__main__':
