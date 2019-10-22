@@ -49,32 +49,36 @@ class SiadSession():
     async def close(self):
         await self._client.close()
 
-    async def get(self, *path, **qs):
+    def get(self, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        return await self._client.get(f"{self._domain}/{'/'.join(path)}",
-                                      params=qs, headers=headers)
+        return self._client.get(f"{self._domain}/{'/'.join(path)}",
+                                params=qs, headers=headers)
 
-    async def post(self, data, *path, **qs):
+    def post(self, data, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        return await self._client.post(f"{self._domain}/{'/'.join(path)}",
-                                       data=data, params=qs, headers=headers)
+        return self._client.post(f"{self._domain}/{'/'.join(path)}",
+                                 data=data, params=qs, headers=headers)
 
     async def upload(self, siapath, data):
         part_siapath = siapath[:-1] + (f'{siapath[-1]}.part',)
         async with self._upload_sem:
-            await self.post(data, 'renter', 'uploadstream', *part_siapath)
-            await self.post(b'', 'renter', 'rename',
-                            *part_siapath, newsiapath=format_sp(siapath))
+            async with await self.post(
+                    data, 'renter', 'uploadstream', *part_siapath) as response:
+                pass
+            async with await self.post(
+                    b'', 'renter', 'rename', *part_siapath,
+                    newsiapath=format_sp(siapath)) as response:
+                pass
 
     async def download(self, siapath):
         async with self._download_sem:
-            response = await self.get('renter', 'stream', *siapath)
-            while True:
-                chunk = await response.content.read(SiadSession.CHUNK_SZ)
-                if chunk:
-                    yield chunk
-                else:
-                    break
+            async with await self.get('renter', 'stream', *siapath) as response:
+                while True:
+                    chunk = await response.content.read(SiadSession.CHUNK_SZ)
+                    if chunk:
+                        yield chunk
+                    else:
+                        break
 
 
 class SiapathStorage():
@@ -88,53 +92,56 @@ class SiapathStorage():
         self.block_files = {}
 
     async def update(self):
-        response = await self._session.get('renter', 'dir', *self._siapath)
-        if response.status == 500: # nonexistent directory
-            self.block_files = {}
-        elif response.status == 200:
-            siafiles = (await response.json()).get('files', [])
-            block_size = None
-            block_files = {}
-            for siafile in siafiles:
-                file_match = re.search(
-                        r'/siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz(\.part)?$',
-                        siafile['siapath'])
-                if not file_match:
-                    continue
+        async with await self._session.get('renter', 'dir', *self._siapath) \
+                as response:
+            if response.status == 500: # nonexistent directory
+                siafiles = []
+            elif response.status == 200:
+                siafiles = (await response.json()).get('files', [])
+            else:
+                raise NotADirectoryError
+        block_size = None
+        block_files = {}
+        for siafile in siafiles:
+            file_match = re.search(
+                    r'/siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz(\.part)?$',
+                    siafile['siapath'])
+            if not file_match:
+                continue
 
-                file_index = int(file_match.group(2))
-                if file_index in block_files:
-                    raise ValueError(f'duplicate files found for block {file_index}')
+            file_index = int(file_match.group(2))
+            if file_index in block_files:
+                raise ValueError(f'duplicate files found for block {file_index}')
 
-                file_block_size = int(file_match.group(1))*1000*1000
-                if not block_size:
-                    block_size = file_block_size
-                elif block_size != file_block_size:
-                    raise ValueError(
-                            f'inconsistent block sizes at {siafile.siapath} - '
-                            f'found {file_block_size}B, expected {block_size}B')
+            file_block_size = int(file_match.group(1))*1000*1000
+            if not block_size:
+                block_size = file_block_size
+            elif block_size != file_block_size:
+                raise ValueError(
+                        f'inconsistent block sizes at {siafile.siapath} - '
+                        f'found {file_block_size}B, expected {block_size}B')
 
-                file_md5_hash = file_match.group(3)
-                file_partial = file_match.group(4) is not None
+            file_md5_hash = file_match.group(3)
+            file_partial = file_match.group(4) is not None
 
-                file_age = pendulum.now() - pendulum.parse(siafile['createtime'])
-                block_files[file_index] = SiapathStorage._BlockFile(
-                        siapath=tuple(siafile['siapath'].split('/')),
-                        md5_hash=file_md5_hash,
-                        size=siafile['filesize'],
-                        partial=file_partial,
-                        complete=siafile['available'],
-                        stalled=(not siafile['available']
-                                 and file_age.minutes >= TRANSFER_STALLED_MIN),
-                        upload_progress=siafile['uploadprogress']/100.0)
-            self.block_files = block_files
-        else:
-            raise NotADirectoryError
+            file_age = pendulum.now() - pendulum.parse(siafile['createtime'])
+            block_files[file_index] = SiapathStorage._BlockFile(
+                    siapath=tuple(siafile['siapath'].split('/')),
+                    md5_hash=file_md5_hash,
+                    size=siafile['filesize'],
+                    partial=file_partial,
+                    complete=siafile['available'],
+                    stalled=(not siafile['available']
+                             and file_age.minutes >= TRANSFER_STALLED_MIN),
+                    upload_progress=siafile['uploadprogress']/100.0)
+        self.block_files = block_files
 
     async def delete(self, index):
         if index in self.block_files:
             siapath = self.block_files[index].siapath
-            await self._session.post(b'', 'renter', 'delete', *siapath)
+            async with await self._session.post(b'', 'renter', 'delete', *siapath) \
+                    as response:
+                pass
         await self.update()
 
     async def upload(self, index, data):
@@ -232,8 +239,9 @@ async def amain(stdscr, args):
         if not args.siapath:
             raise ValueError('no siapath specified')
         async def validate_sp(sp):
-            response = await session.post(b'', 'renter', 'validatesiapath', sp)
-            return response.status == 204
+            async with await session.post(b'', 'renter', 'validatesiapath', sp) \
+                    as response:
+                return response.status == 204
         if not await validate_sp(args.siapath):
             raise ValueError(f'invalid siapath: {args.siapath}')
         return tuple(args.siapath.split('/'))
