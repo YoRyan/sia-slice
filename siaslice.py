@@ -25,6 +25,18 @@ TRANSFER_STALLED_MIN = 3*60
 
 OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
 
+class SiadError(Exception):
+    def __init__(self, status, fields):
+        super().__init__(self)
+        self.status = status
+        self.message = fields.get('message', '')
+        self.fields = {key: value for key, value
+                       in fields.items() if key != 'message'}
+    def __str__(self):
+        return f'<[{self.status}] {self.message}>'
+    def __repr__(self):
+        return self.__str__()
+
 
 class SiadSession():
     USER_AGENT = 'Sia-Agent'
@@ -49,36 +61,40 @@ class SiadSession():
     async def close(self):
         await self._client.close()
 
-    def get(self, *path, **qs):
+    async def get(self, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        return self._client.get(f"{self._domain}/{'/'.join(path)}",
-                                params=qs, headers=headers)
+        response = await self._client.get(f"{self._domain}/{'/'.join(path)}",
+                                          params=qs, headers=headers)
+        if response.status >= 400 or response.status < 600:
+            raise SiadError(response.status, await response.json())
+        else:
+            return response
 
-    def post(self, data, *path, **qs):
+    async def post(self, data, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        return self._client.post(f"{self._domain}/{'/'.join(path)}",
-                                 data=data, params=qs, headers=headers)
+        response = await self._client.post(f"{self._domain}/{'/'.join(path)}",
+                                           data=data, params=qs, headers=headers)
+        if response.status >= 400 or response.status < 600:
+            raise SiadError(response.status, await response.json())
+        else:
+            return response
 
     async def upload(self, siapath, data):
         part_siapath = siapath[:-1] + (f'{siapath[-1]}.part',)
         async with self._upload_sem:
-            async with await self.post(
-                    data, 'renter', 'uploadstream', *part_siapath) as response:
-                pass
-            async with await self.post(
-                    b'', 'renter', 'rename', *part_siapath,
-                    newsiapath=format_sp(siapath)) as response:
-                pass
+            await self.post(data, 'renter', 'uploadstream', *part_siapath)
+            await self.post(b'', 'renter', 'rename', *part_siapath,
+                            newsiapath=format_sp(siapath))
 
     async def download(self, siapath):
         async with self._download_sem:
-            async with await self.get('renter', 'stream', *siapath) as response:
-                while True:
-                    chunk = await response.content.read(SiadSession.CHUNK_SZ)
-                    if chunk:
-                        yield chunk
-                    else:
-                        break
+            response = await self.get('renter', 'stream', *siapath)
+            while True:
+                chunk = await response.content.read(SiadSession.CHUNK_SZ)
+                if chunk:
+                    yield chunk
+                else:
+                    break
 
 
 class SiapathStorage():
@@ -93,14 +109,13 @@ class SiapathStorage():
         self.block_files = {}
 
     async def update(self):
-        async with await self._session.get('renter', 'dir', *self._siapath) \
-                as response:
-            if response.status == 500: # nonexistent directory
-                siafiles = []
-            elif response.status == 200:
-                siafiles = (await response.json()).get('files', [])
-            else:
-                raise NotADirectoryError
+        try:
+            response = await self._session.get('renter', 'dir', *self._siapath)
+        except SiadError:
+            siafiles = []
+        else:
+            siafiles = (await response.json()).get('files', [])
+
         block_size = None
         block_files = {}
         now = pendulum.now()
@@ -141,9 +156,7 @@ class SiapathStorage():
     async def delete(self, index):
         if index in self.block_files:
             siapath = self.block_files[index].siapath
-            async with await self._session.post(b'', 'renter', 'delete', *siapath) \
-                    as response:
-                pass
+            await self._session.post(b'', 'renter', 'delete', *siapath)
         await self.update()
 
     async def upload(self, index, data, overwrite=False):
@@ -244,9 +257,12 @@ async def amain(stdscr, args):
         if not args.siapath:
             raise ValueError('no siapath specified')
         async def validate_sp(sp):
-            async with await session.post(b'', 'renter', 'validatesiapath', sp) \
-                    as response:
-                return response.status == 204
+            try:
+                await session.post(b'', 'renter', 'validatesiapath', sp)
+            except SiadError:
+                return False
+            else:
+                return True
         if not await validate_sp(args.siapath):
             raise ValueError(f'invalid siapath: {args.siapath}')
         return tuple(args.siapath.split('/'))
