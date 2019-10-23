@@ -1,6 +1,6 @@
 # Sia Slice
 
-...is a program that maintains a mirror of a large file on the
+...is a small program that maintains a mirror of a large file on the
 [Sia](https://sia.tech) decentralized storage network. The envisioned use case
 is storing a long-term, low-cost disk image (with periodic updates) for backups
 and archives on The Cloud™.
@@ -16,8 +16,9 @@ the program and the storage requirements on Sia.
 Besides, if you need those features, you can simply use any filesystem you
 choose on top of the original device or disk image. This ability is what
 distinguishes Sia Slice: in contrast to other synchronization programs like
-[Siasync](https://github.com/tbenz9/siasync) that operate at the file level, Sia
-Sice operates at the *block level*.
+[Siasync](https://github.com/tbenz9/siasync) and
+[Repertory](https://bitbucket.org/blockstorage/repertory/src/master/) that
+operate at the file level, Sia Sice operates at the *block level*.
 
 ![Curses screenshot](https://raw.githubusercontent.com/wiki/YoRyan/sia-slice/transfer-screen.png)
 
