@@ -88,6 +88,7 @@ class SiapathStorage():
     def __init__(self, session, *siapath, default_block_size=BLOCK_MB*1000*1000):
         self._session = session
         self._siapath = siapath
+        self._upload_lock = asyncio.Lock()
         self.block_size = default_block_size
         self.block_files = {}
 
@@ -145,11 +146,14 @@ class SiapathStorage():
                 pass
         await self.update()
 
-    async def upload(self, index, data):
+    async def upload(self, index, data, overwrite=False):
         md5_hash = (await aiomd5(data)).hexdigest()
         filename = f'siaslice.{format_bs(self.block_size)}.{index}.{md5_hash}.lz'
-        await self._session.upload(self._siapath + (filename,),
-                                   LZMACompressReader(data))
+        async with self._upload_lock:
+            if overwrite:
+                await self.delete(index)
+            await self._session.upload(self._siapath + (filename,),
+                                       LZMACompressReader(data))
         await self.update()
 
     async def download(self, index):
@@ -307,8 +311,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
             if (index not in storage.block_files
                     or storage.block_files[index].md5_hash != md5_hash
                     or storage.block_files[index].partial):
-                await storage.delete(index)
-                await storage.upload(index, chunk)
+                await storage.upload(index, chunk, overwrite=True)
             index += 1
 
     async def watch_storage():
@@ -342,8 +345,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
     async def reupload(index):
         chunk = await source_afp.read(storage.block_size,
                                       offset=index*storage.block_size)
-        await storage.delete(index)
-        await storage.upload(index, chunk)
+        await storage.upload(index, chunk, overwrite=True)
 
     read_task = asyncio.create_task(linear_read())
     watch_task = asyncio.create_task(watch_storage())
