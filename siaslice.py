@@ -228,6 +228,9 @@ class LZMACompressReader(IOBase):
 def main():
     argp = ArgumentParser(
             description='Sync a large file to Sia with incremental updates.')
+    argp.add_argument(
+            '-t', '--text', action='store_true',
+            help='don\'t display the curses interface')
     argp_op = argp.add_mutually_exclusive_group(required=True)
     argp_op.add_argument(
             '-m', '--mirror', action='store_true',
@@ -246,11 +249,14 @@ def main():
     args = argp.parse_args()
     def start(stdscr):
         nonlocal args
-        asyncio.run(amain(stdscr, args))
-    curses.wrapper(start)
+        asyncio.run(amain(args, stdscr=stdscr))
+    if args.text:
+        start(None)
+    else:
+        curses.wrapper(start)
 
 
-async def amain(stdscr, args):
+async def amain(args, stdscr=None):
     session = SiadSession('http://localhost:9980', os.environ['SIAD_API'])
     await session.create()
     async def siapath():
@@ -267,27 +273,26 @@ async def amain(stdscr, args):
             raise ValueError(f'invalid siapath: {args.siapath}')
         return tuple(args.siapath.split('/'))
     if args.mirror:
-        await do_mirror(stdscr, session, args.file, await siapath())
+        await do_mirror(session, args.file, await siapath(), stdscr=stdscr)
     elif args.download:
-        await do_download(stdscr, session, args.file, await siapath())
+        await do_download(session, args.file, await siapath(), stdscr=stdscr)
     elif args.resume:
         async with aiofile.AIOFile(args.file, 'rb') as state_afp:
             state_pickle = pickle.loads(await state_afp.read())
         if 'siaslice-mirror' in args.file:
             await do_mirror(
-                    stdscr, session, state_pickle['source_file'],
-                    state_pickle['siapath'],
-                    start_block=state_pickle['current_index'])
+                    session, state_pickle['source_file'], state_pickle['siapath'],
+                    start_block=state_pickle['current_index'], stdscr=stdscr)
         elif 'siaslice-download' in args.file:
             await do_download(
-                    stdscr, session, state_pickle['target_file'],
-                    state_pickle['siapath'], start_block=state_pickle['start_block'])
+                    session, state_pickle['target_file'], state_pickle['siapath'],
+                    start_block=state_pickle['start_block'], stdscr=stdscr)
         else:
             raise ValueError(f'bad state file: {args.file}')
     await session.close()
 
 
-async def do_mirror(stdscr, session, source_file, siapath, start_block=0):
+async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
     state_file = f"siaslice-mirror-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
@@ -386,7 +391,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
             await storage.delete(to_trim)
 
 
-async def do_download(stdscr, session, target_file, siapath, start_block=0):
+async def do_download(session, target_file, siapath, start_block=0, stdscr=None):
     state_file = f"siaslice-download-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
@@ -466,6 +471,12 @@ def format_sp(siapath): return '/'.join(siapath)
 
 
 def show_status(stdscr, status, title=''):
+    if stdscr is None:
+        print(f'{title}: {status}')
+    else:
+        show_curses_status(stdscr, status, title=title)
+
+def show_curses_status(stdscr, status, title=''):
     stdscr.refresh()
     lines, cols = stdscr.getmaxyx()
     curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
