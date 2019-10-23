@@ -8,8 +8,8 @@ import re
 from argparse import ArgumentParser
 from collections import namedtuple
 from hashlib import md5
-from io import IOBase
-from lzma import LZMACompressor, LZMADecompressor
+from io import BytesIO
+from lzma import compress, LZMADecompressor
 from types import AsyncGeneratorType, GeneratorType
 
 import aiofile
@@ -19,6 +19,7 @@ from aioify import aioify
 
 
 aiomd5 = aioify(obj=md5)
+aiolzc = aioify(obj=compress)
 
 BLOCK_MB = 100
 TRANSFER_STALLED_MIN = 3*60
@@ -166,7 +167,7 @@ class SiapathStorage():
             if overwrite:
                 await self.delete(index)
             await self._session.upload(self._siapath + (filename,),
-                                       LZMACompressReader(data))
+                                       BytesIO(await aiolzc(data)))
         await self.update()
 
     async def download(self, index):
@@ -180,49 +181,6 @@ class SiapathStorage():
         alzd = aioify(obj=LZMADecompressor().decompress)
         async for chunk in self._session.download(block_file.siapath):
             yield alzd(chunk)
-
-
-class LZMACompressReader(IOBase):
-    CHUNK_SZ = 500*1000
-
-    def __init__(self, data):
-        self._data = data
-        self._lzdata = b''
-        self._dataptr = self._lzptr = 0
-        self._compressor = LZMACompressor()
-
-    def readable(self):
-        return True
-    def read(self, size=-1):
-        if size < 0:
-            while True:
-                try:
-                    self._compress()
-                except EOFError:
-                    lzdata = self._lzdata[self._lzptr:]
-                    self._lzptr = len(self._lzdata)
-                    return lzdata
-        else:
-            while len(self._lzdata) < self._lzptr + size:
-                try:
-                    self._compress()
-                except EOFError:
-                    break
-            lzdata = self._lzdata[self._lzptr:self._lzptr + size]
-            self._lzptr = min(len(self._lzdata), self._lzptr + size)
-            return lzdata
-
-    def _compress(self):
-        if self._dataptr >= len(self._data):
-            try:
-                self._lzdata += self._compressor.flush()
-            except ValueError:
-                raise EOFError
-        else:
-            self._lzdata += self._compressor.compress(
-                    self._data[self._dataptr:
-                               self._dataptr + LZMACompressReader.CHUNK_SZ])
-            self._dataptr += LZMACompressReader.CHUNK_SZ
 
 
 def main():
