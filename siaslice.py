@@ -65,7 +65,7 @@ class SiadSession():
         headers = {'User-Agent': SiadSession.USER_AGENT}
         response = await self._client.get(f"{self._domain}/{'/'.join(path)}",
                                           params=qs, headers=headers)
-        if response.status >= 400 or response.status < 600:
+        if response.status >= 400 and response.status < 600:
             raise SiadError(response.status, await response.json())
         else:
             return response
@@ -74,7 +74,7 @@ class SiadSession():
         headers = {'User-Agent': SiadSession.USER_AGENT}
         response = await self._client.post(f"{self._domain}/{'/'.join(path)}",
                                            data=data, params=qs, headers=headers)
-        if response.status >= 400 or response.status < 600:
+        if response.status >= 400 and response.status < 600:
             raise SiadError(response.status, await response.json())
         else:
             return response
