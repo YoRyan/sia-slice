@@ -102,6 +102,7 @@ class SiapathStorage():
                 raise NotADirectoryError
         block_size = None
         block_files = {}
+        now = pendulum.now()
         for siafile in siafiles:
             file_match = re.search(
                     r'/siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz(\.part)?$',
@@ -124,15 +125,15 @@ class SiapathStorage():
             file_md5_hash = file_match.group(3)
             file_partial = file_match.group(4) is not None
 
-            file_age = pendulum.now() - pendulum.parse(siafile['createtime'])
+            file_age = now - pendulum.parse(siafile['createtime'])
             block_files[file_index] = SiapathStorage._BlockFile(
                     siapath=tuple(siafile['siapath'].split('/')),
                     md5_hash=file_md5_hash,
                     size=siafile['filesize'],
                     partial=file_partial,
                     complete=siafile['available'],
-                    stalled=(not siafile['available']
-                             and file_age.minutes >= TRANSFER_STALLED_MIN),
+                    stalled=((not siafile['available'] or file_partial)
+                             and file_age.in_minutes() >= TRANSFER_STALLED_MIN),
                     upload_progress=siafile['uploadprogress']/100.0)
         self.block_files = block_files
 
