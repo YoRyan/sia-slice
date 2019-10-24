@@ -305,8 +305,8 @@ async def siapath_mirror(storage, source_fp, start_block=0):
             source_fp.seek(index*storage.block_size, 0)
 
             block_file = storage.block_files.get(index, None)
-            if (block_file is None
-                    or block_file.md5_hash != md5_hash or block_file.partial):
+            if (block_file is None or block_file.md5_hash != md5_hash
+                    or block_file.partial or block_file.stalled):
                 data = GeneratorStream(
                         lzma_compress(region_read(source_fp, storage.block_size)))
                 await storage.upload(index, md5_hash, data, overwrite=True)
