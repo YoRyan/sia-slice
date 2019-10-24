@@ -30,16 +30,19 @@ class GeneratorStream(RawIOBase):
     def readable(self):
         return True
     def readinto(self, b):
-        max_length = len(b)
-        while len(self._buf) < max_length:
+        self._buf, n_read = GeneratorStream._write_into(self._buf, b, 0)
+        while n_read < len(b):
             try:
-                self._buf += next(self._generator)
+                i = next(self._generator)
             except StopIteration:
                 break
-        b[:] = self._buf[:max_length]
-        n_read = min(len(self._buf), max_length)
-        self._buf = self._buf[max_length:]
+            else:
+                self._buf, n_read = GeneratorStream._write_into(i, b, n_read)
         return n_read
+    def _write_into(source, dest, start):
+        l = min(len(dest) - start, len(source))
+        dest[start:start + l] = source[:l]
+        return source[l:], start + l
 
 class SiadError(Exception):
     def __init__(self, status, fields):
