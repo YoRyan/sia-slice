@@ -202,6 +202,13 @@ class SiapathStorage():
 def main():
     argp = ArgumentParser(
             description='Sync a large file to Sia with incremental updates.')
+    argp.add_argument('-a', '--api', default='http://localhost:9980',
+                      help=('the HTTP endpoint to communicate with Sia '
+                            "(default: 'http://localhost:9980')"))
+    argp.add_argument('-p', '--password',
+                      default=os.environ.get('SIA_API_PASSWORD', ''),
+                      help=('the API password to communicate with Sia '
+                            "(default: read from $SIA_API_PASSWORD)"))
     argp.add_argument(
             '-t', '--text', action='store_true',
             help='don\'t display the curses interface')
@@ -231,8 +238,7 @@ def main():
 
 
 async def amain(args, stdscr=None):
-    api_password = os.environ['SIA_API_PASSWORD']
-    session = SiadSession('http://localhost:9980', api_password)
+    session = SiadSession(args.api, args.password)
     await session.create()
     async def siapath():
         if not args.siapath:
@@ -240,8 +246,11 @@ async def amain(args, stdscr=None):
         async def validate_sp(sp):
             try:
                 await session.post(b'', 'renter', 'validatesiapath', sp)
-            except SiadError:
-                return False
+            except SiadError as err:
+                if err.status == 400:
+                    return False
+                else:
+                    raise err
             else:
                 return True
         if not await validate_sp(args.siapath):

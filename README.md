@@ -2,7 +2,7 @@
 
 ...is a small program that maintains a mirror of a large file on the
 [Sia](https://sia.tech) decentralized storage network. The envisioned use case
-is storing a long-term, low-cost disk image (with periodic updates) for backups
+is storing a long-term, low-cost disk image, with periodic updates, for backups
 and archives on The Cloud™.
 
 The basic idea behind Sia Slice is to chop up a single block device (or other
@@ -14,16 +14,16 @@ are no "full" or "incremental" snapshots. This minimizes both the complexity of
 the program and the storage requirements on Sia.
 
 Besides, if you need those features, you can simply use any filesystem you
-choose on top of the original device or disk image. This ability is what
-distinguishes Sia Slice: in contrast to other synchronization programs like
+choose on top of the original device or disk image. This ability is what makes
+Sia Slice unique: In contrast to other synchronization programs like
 [Siasync](https://github.com/tbenz9/siasync) and
 [Repertory](https://bitbucket.org/blockstorage/repertory/src/master/) that
 operate at the file level, Sia Sice operates at the *block level*.
 
 ![Curses screenshot](https://raw.githubusercontent.com/wiki/YoRyan/sia-slice/transfer-screen.png)
 
-Sia Slice was written for GNU/Linux. Ports to other platforms should be possible
-with minimal effort.
+Sia Slice was written for GNU/Linux systems with Python 3.7 or later. Ports to
+other platforms should be possible with minimal effort.
 
 The author uses Sia Slice weekly to mirror his Btrfs backup drive.
 
