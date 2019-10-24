@@ -1,4 +1,5 @@
 from asyncio import sleep
+from hashlib import md5
 from lzma import compress
 
 import asynctest
@@ -44,6 +45,21 @@ class TestSyncGenerators(asynctest.TestCase):
         reference = b''.join(bytez for bytez in gen())
         stream = ss.GeneratorStream(gen())
         self.assertEqual(stream.read(), reference)
+
+    def test_md5_hasher(self):
+        with open('40MiBempty.img', 'rb') as fp:
+            reference = md5(fp.read()).hexdigest()
+            fp.seek(0)
+            compare = ss.md5_hasher(ss.region_read(fp, 40*1000*1000))
+        self.assertEqual(compare, reference)
+
+    def test_lzma_compress(self):
+        with open('40MiBempty.img', 'rb') as fp:
+            reference = compress(fp.read())
+            fp.seek(0)
+            compare = b''.join(chunk for chunk in
+                               ss.lzma_compress(ss.region_read(fp, 40*1000*1000)))
+        self.assertEqual(compare, reference)
 
 
 if __name__ == '__main__':

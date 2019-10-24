@@ -8,8 +8,8 @@ import re
 from argparse import ArgumentParser
 from collections import namedtuple
 from hashlib import md5
-from io import BytesIO, DEFAULT_BUFFER_SIZE, RawIOBase
-from lzma import compress, LZMADecompressor
+from io import DEFAULT_BUFFER_SIZE, RawIOBase
+from lzma import LZMACompressor, LZMADecompressor
 from types import AsyncGeneratorType, GeneratorType
 
 import aiofile
@@ -17,9 +17,6 @@ import aiohttp
 import pendulum
 from aioify import aioify
 
-
-aiomd5 = aioify(obj=md5)
-aiolzc = aioify(obj=compress)
 
 BLOCK_MB = 100
 TRANSFER_STALLED_MIN = 3*60
@@ -61,7 +58,6 @@ class SiadSession():
     USER_AGENT = 'Sia-Agent'
     MAX_CONCURRENT_UPLOADS = 1
     MAX_CONCURRENT_DOWNLOADS = 10
-    CHUNK_SZ = 500*1000
 
     def __init__(self, domain, api_password):
         self._client = None
@@ -105,11 +101,11 @@ class SiadSession():
             await self.post(b'', 'renter', 'rename', *part_siapath,
                             newsiapath=format_sp(siapath))
 
-    async def download(self, siapath):
+    async def download(self, siapath, readsize=DEFAULT_BUFFER_SIZE):
         async with self._download_sem:
             response = await self.get('renter', 'stream', *siapath)
             while True:
-                chunk = await response.content.read(SiadSession.CHUNK_SZ)
+                chunk = await response.content.read(readsize)
                 if chunk:
                     yield chunk
                 else:
@@ -123,7 +119,6 @@ class SiapathStorage():
     def __init__(self, session, *siapath, default_block_size=BLOCK_MB*1000*1000):
         self._session = session
         self._siapath = siapath
-        self._upload_lock = asyncio.Lock()
         self.block_size = default_block_size
         self.block_files = {}
 
@@ -178,14 +173,14 @@ class SiapathStorage():
             await self._session.post(b'', 'renter', 'delete', *siapath)
         await self.update()
 
-    async def upload(self, index, data, overwrite=False):
-        md5_hash = (await aiomd5(data)).hexdigest()
+    async def upload(self, index, md5_hash, data, overwrite=False):
         filename = f'siaslice.{format_bs(self.block_size)}.{index}.{md5_hash}.lz'
-        async with self._upload_lock:
+        if index in self.block_files:
             if overwrite:
                 await self.delete(index)
-            await self._session.upload(self._siapath + (filename,),
-                                       BytesIO(await aiolzc(data)))
+            else:
+                raise FileExistsError
+        await self._session.upload(self._siapath + (filename,), data)
         await self.update()
 
     async def download(self, index):
@@ -233,7 +228,8 @@ def main():
 
 
 async def amain(args, stdscr=None):
-    session = SiadSession('http://localhost:9980', os.environ['SIA_API_PASSWORD'])
+    api_password = os.environ['SIA_API_PASSWORD']
+    session = SiadSession('http://localhost:9980', api_password)
     await session.create()
     async def siapath():
         if not args.siapath:
@@ -273,48 +269,64 @@ async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
 
-    source_afp = aiofile.AIOFile(source_file, mode='rb')
-    await source_afp.open()
+    source_fp = open(source_file, mode='rb')
     storage = SiapathStorage(session, *siapath)
     await storage.update()
 
-    async for status in siapath_mirror(storage, source_afp, start_block=start_block):
+    async for status in siapath_mirror(storage, source_fp, start_block=start_block):
         await state_afp.write(pickle.dumps({
                 'source_file': source_file,
                 'siapath': siapath,
                 'current_index': status.current_index}))
         await state_afp.fsync()
         show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
-    source_afp.close()
+    source_fp.close()
     state_afp.close()
     os.remove(state_file)
 
 
-async def siapath_mirror(storage, source_afp, start_block=0):
+async def siapath_mirror(storage, source_fp, start_block=0):
     current_index = 0
     transfers = {}
     status = asyncio.Condition()
 
-    async def linear_read():
+    async def read():
+        nonlocal schedule_reads, source_fp
+        async for index in schedule_reads():
+            source_fp.seek(index*storage.block_size, 0)
+            eof = source_fp.read(1) == b''; source_fp.seek(-1, 1)
+            if eof:
+                break
+
+            md5_hash = md5_hasher(region_read(source_fp, storage.block_size))
+            source_fp.seek(index*storage.block_size, 0)
+
+            block_file = storage.block_files.get(index, None)
+            if (block_file is None
+                    or block_file.md5_hash != md5_hash or block_file.partial):
+                data = GeneratorStream(
+                        lzma_compress(region_read(source_fp, storage.block_size)))
+                await storage.upload(index, md5_hash, data, overwrite=True)
+
+    async def schedule_reads():
         nonlocal status, current_index
-        index = start_block
-        reader = aiofile.Reader(source_afp, chunk_size=storage.block_size,
-                                offset=start_block*storage.block_size)
-        async for chunk in reader:
+        linear_index = start_block
+        while True:
+            reupload = next((index for index, bf in storage.block_files.items()
+                             if bf.stalled or bf.partial), None)
+            if reupload is not None:
+                index = reupload
+            else:
+                index = linear_index
+                linear_index += 1
+
             async with status:
                 current_index = index
                 status.notify()
-            md5_hash = (await aiomd5(chunk)).hexdigest()
-            if (index not in storage.block_files
-                    or storage.block_files[index].md5_hash != md5_hash
-                    or storage.block_files[index].partial):
-                await storage.upload(index, chunk, overwrite=True)
-            index += 1
+            yield index
 
     async def watch_storage():
-        nonlocal status, transfers, current_index, reupload, read_task
-        REUPLOAD_TIME = 5*60
-        reupload_task = None
+        nonlocal status, transfers, current_index, read_task
         uploads_done = False
         while True:
             await asyncio.sleep(5)
@@ -323,32 +335,19 @@ async def siapath_mirror(storage, source_afp, start_block=0):
                 transfers = {index: bf.upload_progress for index, bf
                              in storage.block_files.items()
                              if not bf.complete or bf.partial}
-                uploads_done = transfers == {}
                 status.notify()
 
-            if reupload_task is None or reupload_task.done():
-                if reupload_task is not None:
-                    await reupload_task
-                stalled_upload = next(
-                        (index for index, bf in storage.block_files.items()
-                         if bf.stalled and index < current_index), None)
-                if stalled_upload is not None:
-                    reupload_task = asyncio.create_task(reupload(stalled_upload))
-                elif uploads_done and read_task.done():
-                    async with status:
-                        status.notify()
-                    break
+            uploads_done = transfers == {}
+            if uploads_done and read_task.done():
+                async with status:
+                    status.notify()
+                break
 
-    async def reupload(index):
-        chunk = await source_afp.read(storage.block_size,
-                                      offset=index*storage.block_size)
-        await storage.upload(index, chunk, overwrite=True)
-
-    read_task = asyncio.create_task(linear_read())
+    read_task = asyncio.create_task(read())
     watch_task = asyncio.create_task(watch_storage())
-    last_block = int(os.stat(source_afp.fileno()).st_size//storage.block_size)
+    last_block = int(os.stat(source_fp.fileno()).st_size//storage.block_size)
     async with status:
-        while not watch_task.done():
+        while not read_task.done():
             await status.wait()
             yield OpStatus(transfers=transfers, last_index=last_block,
                            current_index=current_index)
@@ -376,6 +375,20 @@ def region_read(fp, max_length, readsize=DEFAULT_BUFFER_SIZE):
             ptr += len(chunk)
         else:
             break
+
+
+def md5_hasher(data):
+    hasher = md5()
+    for chunk in data:
+        hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def lzma_compress(data):
+    lz = LZMACompressor()
+    for chunk in data:
+        yield lz.compress(chunk)
+    yield lz.flush()
 
 
 async def do_download(session, target_file, siapath, start_block=0, stdscr=None):
