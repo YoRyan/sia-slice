@@ -8,7 +8,7 @@ import re
 from argparse import ArgumentParser
 from collections import namedtuple
 from hashlib import md5
-from io import BytesIO
+from io import BytesIO, DEFAULT_BUFFER_SIZE, RawIOBase
 from lzma import compress, LZMADecompressor
 from types import AsyncGeneratorType, GeneratorType
 
@@ -25,6 +25,24 @@ BLOCK_MB = 100
 TRANSFER_STALLED_MIN = 3*60
 
 OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
+
+class GeneratorStream(RawIOBase):
+    def __init__(self, generator):
+        self._generator = generator
+        self._leftover = b''
+    def readable(self):
+        return True
+    def readinto(self, b):
+        max_length = len(b)
+        buf = self._leftover
+        while len(buf) < max_length:
+            try:
+                buf += next(self._generator)
+            except StopIteration:
+                break
+        b[:] = buf[:max_length]
+        self._leftover = buf[max_length:]
+        return min(len(buf), max_length)
 
 class SiadError(Exception):
     def __init__(self, status, fields):
@@ -347,6 +365,17 @@ async def siapath_mirror(storage, source_afp, start_block=0):
         await storage.delete(to_trim)
         for to_trim in trim_indices:
             await storage.delete(to_trim)
+
+
+def region_read(fp, max_length, readsize=DEFAULT_BUFFER_SIZE):
+    ptr = 0
+    while ptr < max_length:
+        chunk = fp.read(min(readsize, max_length - ptr))
+        if chunk:
+            yield chunk
+            ptr += len(chunk)
+        else:
+            break
 
 
 async def do_download(session, target_file, siapath, start_block=0, stdscr=None):

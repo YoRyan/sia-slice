@@ -15,7 +15,7 @@ class TestTaskGenerator(asynctest.TestCase):
         await ss.await_all(cor() for i in range(10))
         mock.assert_has_awaits([asynctest.call(1)]*10)
 
-    async def test_limit_concurrency(self,):
+    async def test_limit_concurrency(self):
         mock = asynctest.CoroutineMock()
         v = 0
         async def cor():
@@ -28,21 +28,22 @@ class TestTaskGenerator(asynctest.TestCase):
         mock.assert_has_awaits([asynctest.call(i) for i in range(1, 11)])
 
 
-class TestLZMA(asynctest.TestCase):
+class TestSyncGenerators(asynctest.TestCase):
 
-    def test_reader(self):
-        data = b'The quick brown fox jumps over the brown lazy dog.'
-        data_lz = compress(data)
+    def test_fp_generator(self):
+        with open('40MiBempty.img', 'rb') as fp:
+            reference = fp.read()
+            fp.seek(0)
+            read = b''.join(chunk for chunk in ss.region_read(fp, 40*1000*1000))
+        self.assertEqual(read, reference)
 
-        readback = b''
-        reader = ss.LZMACompressReader(data)
-        while True:
-            chunk = reader.read(4)
-            if chunk:
-                readback += chunk
-            else:
-                break
-        self.assertEqual(data_lz, readback)
+    def test_generator_stream(self):
+        def gen():
+            for i in range(10):
+                yield f'{i}'.encode()*1000
+        reference = b''.join(bytez for bytez in gen())
+        stream = ss.GeneratorStream(gen())
+        self.assertEqual(stream.read(), reference)
 
 
 if __name__ == '__main__':
