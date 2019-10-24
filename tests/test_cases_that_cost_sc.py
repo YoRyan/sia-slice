@@ -8,7 +8,7 @@ import siaslice as ss
 
 
 DOMAIN = 'http://localhost:9980'
-API_PASS = os.environ['SIAD_API']
+API_PASS = os.environ['SIA_API_PASSWORD']
 
 
 class TestSiaOperations(asynctest.TestCase):

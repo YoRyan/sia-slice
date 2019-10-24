@@ -233,7 +233,7 @@ def main():
 
 
 async def amain(args, stdscr=None):
-    session = SiadSession('http://localhost:9980', os.environ['SIAD_API'])
+    session = SiadSession('http://localhost:9980', os.environ['SIA_API_PASSWORD'])
     await session.create()
     async def siapath():
         if not args.siapath:
