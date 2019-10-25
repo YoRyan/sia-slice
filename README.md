@@ -35,7 +35,39 @@ pip install https://github.com/YoRyan/nuxhash
 
 ### Usage
 
-Coming soon.
+You must provide the API password required to communicate with Sia, either
+through the command line or by setting `$SIA_API_PASSWORD`. I recommend using
+the environment variable:
+
+```
+export SIA_API_PASSWORD=xxxxxx
+```
+
+To copy the contents of `/dev/sdb1` to a new Sia folder at `/backupdrive`:
+
+```
+siaslice --mirror /dev/sdb1 backupdrive
+```
+
+(To sync again, just run the same command. Sia Slice will locate the previous
+uploads and determine which blocks need to be re-uploaded.)
+
+To download all Sia Slice data from `/backupdrive` and reassemble it on
+`/dev/sdc1`:
+
+```
+siaslice --download /dev/sdc1 backupdrive
+```
+
+Finally, Sia Slice writes a timestamped state file that can be used to resume
+any mirror or download operation in the event of a program crash, network
+interruption, or other catastrophic event.
+
+To resume a stalled mirror operation:
+
+```
+siaslice --resume siaslice-mirror-20191024-1522.dat
+```
 
 ### Notes
 

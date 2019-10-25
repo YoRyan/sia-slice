@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+__author__ = 'Ryan Young'
+__contact__ = 'ryan@youngryan.com'
+__copyright__ = 'Copyright 2019'
+__license__ = 'MIT'
+
 
 import asyncio
 import curses
