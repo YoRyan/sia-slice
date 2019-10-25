@@ -314,9 +314,11 @@ async def siapath_mirror(storage, source_fp, start_block=0):
         nonlocal schedule_reads, source_fp
         async for index in schedule_reads():
             source_fp.seek(index*storage.block_size, 0)
-            eof = source_fp.read(1) == b''; source_fp.seek(-1, 1)
+            eof = source_fp.read(1) == b''
             if eof:
                 break
+            else:
+                source_fp.seek(-1, 1)
 
             md5_hash = md5_hasher(region_read(source_fp, storage.block_size))
             source_fp.seek(index*storage.block_size, 0)
