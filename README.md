@@ -22,6 +22,8 @@ operate at the file level, Sia Sice operates at the *block level*.
 
 ![Curses screenshot](https://raw.githubusercontent.com/wiki/YoRyan/sia-slice/transfer-screen.png)
 
+![Sia screenshot](https://raw.githubusercontent.com/wiki/YoRyan/sia-slice/sia-ui-screen.png)
+
 Sia Slice was written for GNU/Linux systems with Python 3.7 or later. Ports to
 other platforms should be possible with minimal effort.
 
