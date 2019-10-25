@@ -121,6 +121,17 @@ class SiadSession():
                 else:
                     break
 
+    async def validate_path(sp):
+        try:
+            await self.post(b'', 'renter', 'validatesiapath', sp)
+        except SiadError as err:
+            if err.status == 400:
+                return False
+            else:
+                raise err
+        else:
+            return True
+
 
 class SiapathStorage():
     _BlockFile = namedtuple('_BlockFile', ['siapath', 'md5_hash', 'size', 'partial',
@@ -250,17 +261,7 @@ async def amain(args, stdscr=None):
     async def siapath():
         if not args.siapath:
             raise ValueError('no siapath specified')
-        async def validate_sp(sp):
-            try:
-                await session.post(b'', 'renter', 'validatesiapath', sp)
-            except SiadError as err:
-                if err.status == 400:
-                    return False
-                else:
-                    raise err
-            else:
-                return True
-        if not await validate_sp(args.siapath):
+        if not await session.validate_path(args.siapath):
             raise ValueError(f'invalid siapath: {args.siapath}')
         return tuple(args.siapath.split('/'))
     if args.mirror:
