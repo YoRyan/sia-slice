@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""A program to sync a large file to Sia with incremental updates."""
+
+
 __author__ = 'Ryan Young'
 __contact__ = 'ryan@youngryan.com'
 __copyright__ = 'Copyright 2019'
@@ -52,14 +55,14 @@ class SiadSession():
         self._domain = domain
         self._api_password = api_password
         self._upload_sem = asyncio.BoundedSemaphore(
-                value=SiadSession.MAX_CONCURRENT_UPLOADS)
+            value=SiadSession.MAX_CONCURRENT_UPLOADS)
         self._download_sem = asyncio.BoundedSemaphore(
-                value=SiadSession.MAX_CONCURRENT_DOWNLOADS)
+            value=SiadSession.MAX_CONCURRENT_DOWNLOADS)
 
     async def create(self):
         self._client = aiohttp.ClientSession(
-                auth=aiohttp.BasicAuth('', password=self._api_password),
-                timeout=aiohttp.ClientTimeout(total=None))
+            auth=aiohttp.BasicAuth('', password=self._api_password),
+            timeout=aiohttp.ClientTimeout(total=None))
 
     async def close(self):
         await self._client.close()
@@ -134,8 +137,8 @@ class SiapathStorage():
         now = pendulum.now()
         for siafile in siafiles:
             file_match = re.search(
-                    r'/siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz(\.part)?$',
-                    siafile['siapath'])
+                r'/siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz(\.part)?$',
+                siafile['siapath'])
             if not file_match:
                 continue
 
@@ -147,23 +150,22 @@ class SiapathStorage():
             if not block_size:
                 block_size = file_block_size
             elif block_size != file_block_size:
-                raise ValueError(
-                        f'inconsistent block sizes at {siafile.siapath} - '
-                        f'found {file_block_size}B, expected {block_size}B')
+                raise ValueError(f'inconsistent block sizes at {siafile.siapath} - '
+                                 f'found {file_block_size}B, expected {block_size}B')
 
             file_md5_hash = file_match.group(3)
             file_partial = file_match.group(4) is not None
 
             file_age = now - pendulum.parse(siafile['createtime'])
             block_files[file_index] = SiapathStorage._BlockFile(
-                    siapath=tuple(siafile['siapath'].split('/')),
-                    md5_hash=file_md5_hash,
-                    size=siafile['filesize'],
-                    partial=file_partial,
-                    complete=siafile['available'],
-                    stalled=((not siafile['available'] or file_partial)
-                             and file_age.in_minutes() >= TRANSFER_STALLED_MIN),
-                    upload_progress=siafile['uploadprogress']/100.0)
+                siapath=tuple(siafile['siapath'].split('/')),
+                md5_hash=file_md5_hash,
+                size=siafile['filesize'],
+                partial=file_partial,
+                complete=siafile['available'],
+                stalled=((not siafile['available'] or file_partial)
+                         and file_age.in_minutes() >= TRANSFER_STALLED_MIN),
+                upload_progress=siafile['uploadprogress']/100.0)
         self.block_files = block_files
 
     async def delete(self, index):
@@ -206,24 +208,22 @@ def main():
                       default=os.environ.get('SIA_API_PASSWORD', ''),
                       help=('the API password to communicate with Sia '
                             "(default: read from $SIA_API_PASSWORD)"))
-    argp.add_argument(
-            '-t', '--text', action='store_true',
-            help='don\'t display the curses interface')
+    argp.add_argument('-t', '--text', action='store_true',
+                      help='don\'t display the curses interface')
     argp_op = argp.add_mutually_exclusive_group(required=True)
-    argp_op.add_argument(
-            '-m', '--mirror', action='store_true',
-            help=('sync a copy to Sia by dividing the file into '
-                  f'{BLOCK_MB}MiB chunks'))
+    argp_op.add_argument('-m', '--mirror', action='store_true',
+                         help=('sync a copy to Sia by dividing the file into '
+                               f'{BLOCK_MB}MiB chunks'))
     argp_op.add_argument('-d', '--download', action='store_true',
                          help='reconstruct a copy using Sia')
     argp_op.add_argument(
-            '-r', '--resume', action='store_true',
-            help='resume a stalled operation with the provided state file')
+        '-r', '--resume', action='store_true',
+        help='resume a stalled operation with the provided state file')
     argp.add_argument('file', help=('file target for uploads, source for '
                                     'downloads, or state to resume from'))
     argp.add_argument(
-            'siapath', nargs='?',
-            help='Sia directory target for uploads or source for downloads')
+        'siapath', nargs='?',
+        help='Sia directory target for uploads or source for downloads')
     args = argp.parse_args()
     def start(stdscr):
         nonlocal args
@@ -252,12 +252,12 @@ async def amain(args, stdscr=None):
             state_pickle = pickle.loads(await state_afp.read())
         if 'siaslice-mirror' in args.file:
             await do_mirror(
-                    session, state_pickle['source_file'], state_pickle['siapath'],
-                    start_block=state_pickle['current_index'], stdscr=stdscr)
+                session, state_pickle['source_file'], state_pickle['siapath'],
+                start_block=state_pickle['current_index'], stdscr=stdscr)
         elif 'siaslice-download' in args.file:
             await do_download(
-                    session, state_pickle['target_file'], state_pickle['siapath'],
-                    start_block=state_pickle['start_block'], stdscr=stdscr)
+                session, state_pickle['target_file'], state_pickle['siapath'],
+                start_block=state_pickle['start_block'], stdscr=stdscr)
         else:
             raise ValueError(f'bad state file: {args.file}')
     await session.close()
@@ -275,9 +275,9 @@ async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
 
     async for status in siapath_mirror(storage, source_afp, start_block=start_block):
         await state_afp.write(pickle.dumps({
-                'source_file': source_file,
-                'siapath': siapath,
-                'current_index': status.current_index}))
+            'source_file': source_file,
+            'siapath': siapath,
+            'current_index': status.current_index}))
         await state_afp.fsync()
         show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
     source_afp.close()
@@ -299,12 +299,12 @@ async def siapath_mirror(storage, source_afp, start_block=0):
                 break
 
             md5_hash = await md5_hasher(
-                    region_read(source_afp, pos, storage.block_size))
+                region_read(source_afp, pos, storage.block_size))
             block_file = storage.block_files.get(index, None)
             if (block_file is None or block_file.md5_hash != md5_hash
                     or block_file.partial or block_file.stalled):
                 data = lzma_compress(
-                        region_read(source_afp, pos, storage.block_size))
+                    region_read(source_afp, pos, storage.block_size))
                 await storage.upload(index, md5_hash, data, overwrite=True)
 
     async def schedule_reads():
@@ -410,9 +410,9 @@ async def do_download(session, target_file, siapath, start_block=0, stdscr=None)
     async for status in siapath_download(storage, target_afp,
                                          start_block=start_block):
         await state_afp.write(pickle.dumps({
-                'target_file': target_file,
-                'siapath': siapath,
-                'current_index': status.current_index}))
+            'target_file': target_file,
+            'siapath': siapath,
+            'current_index': status.current_index}))
         await state_afp.fsync()
         show_status(stdscr, status, title=f'{format_sp(siapath)} -> {target_file}')
     target_afp.close()
@@ -448,9 +448,9 @@ async def siapath_download(storage, target_afp, start_block=0):
             current_index = min(transfers.keys()) if transfers != {} else index
             status.notify()
 
-    download_task = asyncio.create_task(await_all(limit_concurrency(
-            (task async for task in parallel_download()),
-            SiadSession.MAX_CONCURRENT_DOWNLOADS)))
+    download_task = asyncio.create_task(
+        await_all(limit_concurrency((task async for task in parallel_download()),
+                                    SiadSession.MAX_CONCURRENT_DOWNLOADS)))
     async def wait_for_complete(task):
         nonlocal status
         await task
