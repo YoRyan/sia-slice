@@ -15,7 +15,7 @@ class TestSiaOperations(asynctest.TestCase):
 
     async def setUp(self):
         self.session = ss.SiadSession(DOMAIN, API_PASS)
-        await self.session.create()
+        await self.session.open()
 
     async def tearDown(self):
         await self.session.close()

@@ -59,13 +59,18 @@ class SiadSession():
         self._download_sem = asyncio.BoundedSemaphore(
             value=SiadSession.MAX_CONCURRENT_DOWNLOADS)
 
-    async def create(self):
+    async def open(self):
         self._client = aiohttp.ClientSession(
             auth=aiohttp.BasicAuth('', password=self._api_password),
             timeout=aiohttp.ClientTimeout(total=None))
+    async def __aenter__(self):
+        await self.open()
+        return self
 
     async def close(self):
         await self._client.close()
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
     async def get(self, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
@@ -235,32 +240,30 @@ def main():
 
 
 async def amain(args, stdscr=None):
-    session = SiadSession(args.api, args.password)
-    await session.create()
-    async def siapath():
-        if not args.siapath:
-            raise ValueError('no siapath specified')
-        if not await session.validate_path(args.siapath):
-            raise ValueError(f'invalid siapath: {args.siapath}')
-        return tuple(args.siapath.split('/'))
-    if args.mirror:
-        await do_mirror(session, args.file, await siapath(), stdscr=stdscr)
-    elif args.download:
-        await do_download(session, args.file, await siapath(), stdscr=stdscr)
-    elif args.resume:
-        async with aiofile.AIOFile(args.file, 'rb') as state_afp:
-            state_pickle = pickle.loads(await state_afp.read())
-        if 'siaslice-mirror' in args.file:
-            await do_mirror(
-                session, state_pickle['source_file'], state_pickle['siapath'],
-                start_block=state_pickle['current_index'], stdscr=stdscr)
-        elif 'siaslice-download' in args.file:
-            await do_download(
-                session, state_pickle['target_file'], state_pickle['siapath'],
-                start_block=state_pickle['start_block'], stdscr=stdscr)
-        else:
-            raise ValueError(f'bad state file: {args.file}')
-    await session.close()
+    async with SiadSession(args.api, args.password) as session:
+        async def siapath():
+            if not args.siapath:
+                raise ValueError('no siapath specified')
+            if not await session.validate_path(args.siapath):
+                raise ValueError(f'invalid siapath: {args.siapath}')
+            return tuple(args.siapath.split('/'))
+        if args.mirror:
+            await do_mirror(session, args.file, await siapath(), stdscr=stdscr)
+        elif args.download:
+            await do_download(session, args.file, await siapath(), stdscr=stdscr)
+        elif args.resume:
+            async with aiofile.AIOFile(args.file, 'rb') as state_afp:
+                state_pickle = pickle.loads(await state_afp.read())
+            if 'siaslice-mirror' in args.file:
+                await do_mirror(
+                    session, state_pickle['source_file'], state_pickle['siapath'],
+                    start_block=state_pickle['current_index'], stdscr=stdscr)
+            elif 'siaslice-download' in args.file:
+                await do_download(
+                    session, state_pickle['target_file'], state_pickle['siapath'],
+                    start_block=state_pickle['start_block'], stdscr=stdscr)
+            else:
+                raise ValueError(f'bad state file: {args.file}')
 
 
 async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
