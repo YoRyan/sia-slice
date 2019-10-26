@@ -22,7 +22,6 @@ from types import AsyncGeneratorType, GeneratorType
 import aiofile
 import aiohttp
 import pendulum
-from aioify import aioify
 
 
 BLOCK_MB = 100
@@ -191,9 +190,10 @@ class SiapathStorage():
         if block_file.partial or not block_file.complete:
             raise FileNotFoundError
 
-        alzd = aioify(obj=LZMADecompressor().decompress)
+        loop = asyncio.get_running_loop()
+        lz = LZMADecompressor()
         async for chunk in self._session.download(block_file.siapath):
-            yield alzd(chunk)
+            yield await loop.run_in_executor(None, lz.decompress, chunk)
 
 
 def main():
@@ -378,19 +378,19 @@ async def region_read(afp, start, max_length, readsize=DEFAULT_BUFFER_SIZE):
 
 
 async def md5_hasher(adata):
+    loop = asyncio.get_running_loop()
     hasher = md5()
-    aioupdate = aioify(obj=hasher.update)
     async for chunk in adata:
-        aioupdate(chunk)
-    return aioify(obj=hasher.hexdigest)()
+        await loop.run_in_executor(None, hasher.update, chunk)
+    return await loop.run_in_executor(None, hasher.hexdigest)
 
 
 async def lzma_compress(adata):
+    loop = asyncio.get_running_loop()
     lz = LZMACompressor()
-    aiolzc = aioify(obj=lz.compress)
     async for chunk in adata:
-        yield aiolzc(chunk)
-    yield aioify(obj=lz.flush)()
+        yield await loop.run_in_executor(None, lz.compress, chunk)
+    yield await loop.run_in_executor(None, lz.flush)
 
 
 async def do_download(session, target_file, siapath, start_block=0, stdscr=None):

@@ -9,7 +9,6 @@ setup(
     install_requires=[
         'aiofile',
         'aiohttp',
-        'aioify',
         'pendulum'
     ],
     entry_points={
