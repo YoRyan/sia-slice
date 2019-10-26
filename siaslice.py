@@ -264,24 +264,21 @@ async def amain(args, stdscr=None):
 
 
 async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
-    state_file = f"siaslice-mirror-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
-    state_afp = aiofile.AIOFile(state_file, mode='wb')
-    await state_afp.open()
-
-    source_afp = aiofile.AIOFile(source_file, mode='rb')
-    await source_afp.open()
     storage = SiapathStorage(session, *siapath)
     await storage.update()
 
-    async for status in siapath_mirror(storage, source_afp, start_block=start_block):
-        await state_afp.write(pickle.dumps({
-            'source_file': source_file,
-            'siapath': siapath,
-            'current_index': status.current_index}))
-        await state_afp.fsync()
-        show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
-    source_afp.close()
-    state_afp.close()
+    state_file = f"siaslice-mirror-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
+    async with aiofile.AIOFile(state_file, mode='wb') as state_afp, \
+               aiofile.AIOFile(source_file, mode='rb') as source_afp:
+        async for status in siapath_mirror(storage, source_afp,
+                                           start_block=start_block):
+            await state_afp.write(pickle.dumps({
+                'source_file': source_file,
+                'siapath': siapath,
+                'current_index': status.current_index}))
+            await state_afp.fsync()
+            show_status(stdscr, status,
+                        title=f'{source_file} -> {format_sp(siapath)}')
     os.remove(state_file)
 
 
@@ -394,9 +391,8 @@ async def lzma_compress(adata):
 
 
 async def do_download(session, target_file, siapath, start_block=0, stdscr=None):
-    state_file = f"siaslice-download-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
-    state_afp = aiofile.AIOFile(state_file, mode='wb')
-    await state_afp.open()
+    storage = SiapathStorage(session, *siapath)
+    await storage.update()
 
     try:
         target_afp = aiofile.AIOFile(target_file, mode='r+b')
@@ -404,19 +400,19 @@ async def do_download(session, target_file, siapath, start_block=0, stdscr=None)
     except FileNotFoundError:
         target_afp = aiofile.AIOFile(target_file, mode='wb')
         await target_afp.open()
-    storage = SiapathStorage(session, *siapath)
-    await storage.update()
 
-    async for status in siapath_download(storage, target_afp,
-                                         start_block=start_block):
-        await state_afp.write(pickle.dumps({
-            'target_file': target_file,
-            'siapath': siapath,
-            'current_index': status.current_index}))
-        await state_afp.fsync()
-        show_status(stdscr, status, title=f'{format_sp(siapath)} -> {target_file}')
+    state_file = f"siaslice-download-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
+    async with aiofile.AIOFile(state_file, mode='wb') as state_afp:
+        async for status in siapath_download(storage, target_afp,
+                                             start_block=start_block):
+            await state_afp.write(pickle.dumps({
+                'target_file': target_file,
+                'siapath': siapath,
+                'current_index': status.current_index}))
+            await state_afp.fsync()
+            show_status(stdscr, status,
+                        title=f'{format_sp(siapath)} -> {target_file}')
     target_afp.close()
-    state_afp.close()
     os.remove(state_file)
 
 
