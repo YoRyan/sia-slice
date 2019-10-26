@@ -51,9 +51,9 @@ class TestSiaOperations(asynctest.TestCase):
         storage = ss.SiapathStorage(self.session, TestSiaOperations.TEST_DIR,
                                     default_block_size=40*1000*1000)
         await storage.update()
-        with open('40MiBempty.img', 'rb') as fp:
-            reference = fp.read()
-            async for status in ss.siapath_mirror(storage, fp):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference = await afp.read()
+            async for status in ss.siapath_mirror(storage, afp):
                 pass
 
         uploaded = b''
@@ -67,9 +67,9 @@ class TestSiaOperations(asynctest.TestCase):
         storage = ss.SiapathStorage(self.session, TestSiaOperations.TEST_DIR,
                                     default_block_size=20*1000*1000)
         await storage.update()
-        with open('40MiBempty.img', 'rb') as fp:
-            reference = fp.read()
-            async for status in ss.siapath_mirror(storage, fp):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference = await afp.read()
+            async for status in ss.siapath_mirror(storage, afp):
                 pass
 
         uploaded = b''
@@ -86,9 +86,9 @@ class TestSiaOperations(asynctest.TestCase):
         storage = ss.SiapathStorage(self.session, TestSiaOperations.TEST_DIR,
                                     default_block_size=40*1000*1000)
         await storage.update()
-        with open('40MiBempty.img', 'rb') as fp:
-            reference = fp.read()
-            async for status in ss.siapath_mirror(storage, fp):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference = await afp.read()
+            async for status in ss.siapath_mirror(storage, afp):
                 pass
 
         async with AIOFile('test_download.img', 'wb') as afp:
@@ -105,9 +105,9 @@ class TestSiaOperations(asynctest.TestCase):
         storage = ss.SiapathStorage(self.session, TestSiaOperations.TEST_DIR,
                                     default_block_size=20*1000*1000)
         await storage.update()
-        with open('40MiBempty.img', 'rb') as fp:
-            reference = fp.read()
-            async for status in ss.siapath_mirror(storage, fp):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference = await afp.read()
+            async for status in ss.siapath_mirror(storage, afp):
                 pass
 
         async with AIOFile('test_download.img', 'wb') as afp:

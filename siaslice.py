@@ -30,27 +30,6 @@ TRANSFER_STALLED_MIN = 3*60
 
 OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
 
-class GeneratorStream(RawIOBase):
-    def __init__(self, generator):
-        self._generator = generator
-        self._buf = b''
-    def readable(self):
-        return True
-    def readinto(self, b):
-        self._buf, n_read = GeneratorStream._write_into(self._buf, b, 0)
-        while n_read < len(b):
-            try:
-                i = next(self._generator)
-            except StopIteration:
-                break
-            else:
-                self._buf, n_read = GeneratorStream._write_into(i, b, n_read)
-        return n_read
-    def _write_into(source, dest, start):
-        l = min(len(dest) - start, len(source))
-        dest[start:start + l] = source[:l]
-        return source[l:], start + l
-
 class SiadError(Exception):
     def __init__(self, status, fields):
         super().__init__(self)
@@ -289,45 +268,43 @@ async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
     state_afp = aiofile.AIOFile(state_file, mode='wb')
     await state_afp.open()
 
-    source_fp = open(source_file, mode='rb')
+    source_afp = aiofile.AIOFile(source_file, mode='rb')
+    await source_afp.open()
     storage = SiapathStorage(session, *siapath)
     await storage.update()
 
-    async for status in siapath_mirror(storage, source_fp, start_block=start_block):
+    async for status in siapath_mirror(storage, source_afp, start_block=start_block):
         await state_afp.write(pickle.dumps({
                 'source_file': source_file,
                 'siapath': siapath,
                 'current_index': status.current_index}))
         await state_afp.fsync()
         show_status(stdscr, status, title=f'{source_file} -> {format_sp(siapath)}')
-    source_fp.close()
+    source_afp.close()
     state_afp.close()
     os.remove(state_file)
 
 
-async def siapath_mirror(storage, source_fp, start_block=0):
+async def siapath_mirror(storage, source_afp, start_block=0):
     current_index = 0
     transfers = {}
     status = asyncio.Condition()
 
     async def read():
-        nonlocal schedule_reads, source_fp
+        nonlocal schedule_reads
         async for index in schedule_reads():
-            source_fp.seek(index*storage.block_size, 0)
-            eof = source_fp.read(1) == b''
+            pos = index*storage.block_size
+            eof = await source_afp.read(1, offset=pos) == b''
             if eof:
                 break
-            else:
-                source_fp.seek(-1, 1)
 
-            md5_hash = md5_hasher(region_read(source_fp, storage.block_size))
-            source_fp.seek(index*storage.block_size, 0)
-
+            md5_hash = await md5_hasher(
+                    region_read(source_afp, pos, storage.block_size))
             block_file = storage.block_files.get(index, None)
             if (block_file is None or block_file.md5_hash != md5_hash
                     or block_file.partial or block_file.stalled):
-                data = GeneratorStream(
-                        lzma_compress(region_read(source_fp, storage.block_size)))
+                data = lzma_compress(
+                        region_read(source_afp, pos, storage.block_size))
                 await storage.upload(index, md5_hash, data, overwrite=True)
 
     async def schedule_reads():
@@ -367,7 +344,7 @@ async def siapath_mirror(storage, source_fp, start_block=0):
 
     read_task = asyncio.create_task(read())
     watch_task = asyncio.create_task(watch_storage())
-    last_block = int(os.stat(source_fp.fileno()).st_size//storage.block_size)
+    last_block = int(os.stat(source_afp.fileno()).st_size//storage.block_size)
     async with status:
         while not read_task.done():
             await status.wait()
@@ -388,10 +365,11 @@ async def siapath_mirror(storage, source_fp, start_block=0):
             await storage.delete(to_trim)
 
 
-def region_read(fp, max_length, readsize=DEFAULT_BUFFER_SIZE):
-    ptr = 0
-    while ptr < max_length:
-        chunk = fp.read(min(readsize, max_length - ptr))
+async def region_read(afp, start, max_length, readsize=DEFAULT_BUFFER_SIZE):
+    ptr = start
+    end = start + max_length
+    while ptr < end:
+        chunk = await afp.read(min(readsize, end - ptr), offset=ptr)
         if chunk:
             yield chunk
             ptr += len(chunk)
@@ -399,18 +377,20 @@ def region_read(fp, max_length, readsize=DEFAULT_BUFFER_SIZE):
             break
 
 
-def md5_hasher(data):
+async def md5_hasher(adata):
     hasher = md5()
-    for chunk in data:
-        hasher.update(chunk)
-    return hasher.hexdigest()
+    aioupdate = aioify(obj=hasher.update)
+    async for chunk in adata:
+        aioupdate(chunk)
+    return aioify(obj=hasher.hexdigest)()
 
 
-def lzma_compress(data):
+async def lzma_compress(adata):
     lz = LZMACompressor()
-    for chunk in data:
-        yield lz.compress(chunk)
-    yield lz.flush()
+    aiolzc = aioify(obj=lz.compress)
+    async for chunk in adata:
+        yield aiolzc(chunk)
+    yield aioify(obj=lz.flush)()
 
 
 async def do_download(session, target_file, siapath, start_block=0, stdscr=None):

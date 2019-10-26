@@ -3,6 +3,7 @@ from hashlib import md5
 from lzma import compress
 
 import asynctest
+from aiofile import AIOFile
 
 import siaslice as ss
 
@@ -29,36 +30,26 @@ class TestTaskGenerator(asynctest.TestCase):
         mock.assert_has_awaits([asynctest.call(i) for i in range(1, 11)])
 
 
-class TestSyncGenerators(asynctest.TestCase):
+class TestGenerators(asynctest.TestCase):
 
-    def test_fp_generator(self):
-        with open('40MiBempty.img', 'rb') as fp:
-            reference = fp.read()
-            fp.seek(0)
-            read = b''.join(chunk for chunk in ss.region_read(fp, 40*1000*1000))
+    async def test_afp_generator(self):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference = await afp.read()
+            read = b''.join([chunk async for chunk
+                             in ss.region_read(afp, 0, 40*1000*1000)])
         self.assertEqual(read, reference)
 
-    def test_generator_stream(self):
-        def gen():
-            for i in range(10):
-                yield f'{i}'.encode()*1000
-        reference = b''.join(bytez for bytez in gen())
-        stream = ss.GeneratorStream(gen())
-        self.assertEqual(stream.read(), reference)
-
-    def test_md5_hasher(self):
-        with open('40MiBempty.img', 'rb') as fp:
-            reference = md5(fp.read()).hexdigest()
-            fp.seek(0)
-            compare = ss.md5_hasher(ss.region_read(fp, 40*1000*1000))
+    async def test_md5_hasher(self):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference = md5(await afp.read()).hexdigest()
+            compare = await ss.md5_hasher(ss.region_read(afp, 0, 40*1000*1000))
         self.assertEqual(compare, reference)
 
-    def test_lzma_compress(self):
-        with open('40MiBempty.img', 'rb') as fp:
-            reference = compress(fp.read())
-            fp.seek(0)
-            compare = b''.join(chunk for chunk in
-                               ss.lzma_compress(ss.region_read(fp, 40*1000*1000)))
+    async def test_lzma_compress(self):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            reference = compress(await afp.read())
+            agen = ss.region_read(afp, 0, 40*1000*1000)
+            compare = b''.join([chunk async for chunk in ss.lzma_compress(agen)])
         self.assertEqual(compare, reference)
 
 
