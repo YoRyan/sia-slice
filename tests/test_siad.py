@@ -24,10 +24,9 @@ class GetRequest(asynctest.TestCase):
         self.assertIn('version', await response.json())
 
     async def test_stream_nonexistent_file(self):
-        response = await self.session.get('renter', 'stream',
-                                          'siaslice_test_file_abcd1234')
-        self.assertEqual(response.status, 500)
-        self.assertIn('message', await response.json())
+        with self.assertRaises(ss.SiadError) as err:
+            await self.session.get('renter', 'stream', 'siaslice_test_file_abcd1234')
+            self.assertEqual(err.status, 500)
 
 
 class PostRequest(asynctest.TestCase):
@@ -46,9 +45,9 @@ class PostRequest(asynctest.TestCase):
         self.assertEqual(await response.text(), '')
 
     async def test_invalid_siapath(self):
-        response = await self.session.post(b'', 'renter', 'validatesiapath', '')
-        self.assertEqual(response.status, 400)
-        self.assertIn('message', await response.json())
+        with self.assertRaises(ss.SiadError) as err:
+            await self.session.post(b'', 'renter', 'validatesiapath', '')
+            self.assertEqual(err.status, 400)
 
 
 if __name__ == '__main__':
