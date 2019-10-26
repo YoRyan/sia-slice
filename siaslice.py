@@ -15,7 +15,7 @@ import re
 from argparse import ArgumentParser
 from collections import namedtuple
 from hashlib import md5
-from io import DEFAULT_BUFFER_SIZE, RawIOBase
+from io import DEFAULT_BUFFER_SIZE
 from lzma import LZMACompressor, LZMADecompressor
 from types import AsyncGeneratorType, GeneratorType
 
