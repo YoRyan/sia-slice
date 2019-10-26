@@ -312,7 +312,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
         linear_index = start_block
         while True:
             reupload = next((index for index, bf in storage.block_files.items()
-                             if bf.stalled or bf.partial), None)
+                             if bf.partial or bf.stalled), None)
             if reupload is not None:
                 index = reupload
             else:
@@ -451,12 +451,12 @@ async def siapath_download(storage, target_afp, start_block=0):
     download_task = asyncio.create_task(await_all(limit_concurrency(
             (task async for task in parallel_download()),
             SiadSession.MAX_CONCURRENT_DOWNLOADS)))
-    async def wait_for_complete():
-        nonlocal status, download_task
-        await download_task
+    async def wait_for_complete(task):
+        nonlocal status
+        await task
         async with status:
             status.notify()
-    wait_task = asyncio.create_task(wait_for_complete())
+    wait_task = asyncio.create_task(wait_for_complete(download_task))
     async with status:
         while not download_task.done():
             await status.wait()
