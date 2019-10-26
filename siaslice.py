@@ -107,7 +107,7 @@ class SiadSession():
                 else:
                     break
 
-    async def validate_path(sp):
+    async def validate_path(self, sp):
         try:
             await self.post(b'', 'renter', 'validatesiapath', sp)
         except SiadError as err:
