@@ -8,8 +8,7 @@ setup(
     zip_safe=False,
     install_requires=[
         'aiofile',
-        'aiohttp',
-        'pendulum'
+        'aiohttp'
     ],
     entry_points={
         'console_scripts': [

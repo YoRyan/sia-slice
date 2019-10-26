@@ -17,6 +17,7 @@ import pickle
 import re
 from argparse import ArgumentParser
 from collections import namedtuple
+from datetime import datetime, timedelta, timezone
 from hashlib import md5
 from io import DEFAULT_BUFFER_SIZE
 from lzma import LZMACompressor, LZMADecompressor
@@ -24,7 +25,6 @@ from types import AsyncGeneratorType, GeneratorType
 
 import aiofile
 import aiohttp
-import pendulum
 
 
 BLOCK_MB = 100
@@ -118,6 +118,23 @@ class SiadSession():
         else:
             return True
 
+    def parse_time(ts):
+        match = re.search(r'^(\d\d\d\d)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d+)'
+                          r'(-|\+)(\d\d):(\d\d)$', ts)
+        if not match:
+            raise ValueError(f'invalid sia timestamp: {ts}')
+        tz_s = 1 if match.group(8) == '+' else -1
+        tz = timezone(timedelta(hours=tz_s*int(match.group(9)),
+                                minutes=int(match.group(10))))
+        return datetime(int(match.group(1)), # year
+                        int(match.group(2)), # month
+                        int(match.group(3)), # day
+                        hour=int(match.group(4)),
+                        minute=int(match.group(5)),
+                        second=int(match.group(6)),
+                        microsecond=round(float(match.group(7))*1000000),
+                        tzinfo=tz)
+
 
 class SiapathStorage():
     _BlockFile = namedtuple('_BlockFile', ['siapath', 'md5_hash', 'size', 'partial',
@@ -139,7 +156,7 @@ class SiapathStorage():
 
         block_size = None
         block_files = {}
-        now = pendulum.now()
+        now = datetime.now(timezone.utc)
         for siafile in siafiles:
             file_match = re.search(
                 r'/siaslice\.(\d+)MiB\.(\d+)\.([a-z\d]+)\.lz(\.part)?$',
@@ -161,7 +178,7 @@ class SiapathStorage():
             file_md5_hash = file_match.group(3)
             file_partial = file_match.group(4) is not None
 
-            file_age = now - pendulum.parse(siafile['createtime'])
+            file_age = now - SiadSession.parse_time(siafile['createtime'])
             block_files[file_index] = SiapathStorage._BlockFile(
                 siapath=tuple(siafile['siapath'].split('/')),
                 md5_hash=file_md5_hash,
@@ -169,7 +186,7 @@ class SiapathStorage():
                 partial=file_partial,
                 complete=siafile['available'],
                 stalled=((not siafile['available'] or file_partial)
-                         and file_age.in_minutes() >= TRANSFER_STALLED_MIN),
+                         and file_age/timedelta(minutes=1) >= TRANSFER_STALLED_MIN),
                 upload_progress=siafile['uploadprogress']/100.0)
         self.block_files = block_files
 
@@ -270,7 +287,7 @@ async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
     storage = SiapathStorage(session, *siapath)
     await storage.update()
 
-    state_file = f"siaslice-mirror-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
+    state_file = f"siaslice-mirror-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
     async with aiofile.AIOFile(state_file, mode='wb') as state_afp, \
                aiofile.AIOFile(source_file, mode='rb') as source_afp:
         async for status in siapath_mirror(storage, source_afp,
@@ -404,7 +421,7 @@ async def do_download(session, target_file, siapath, start_block=0, stdscr=None)
         target_afp = aiofile.AIOFile(target_file, mode='wb')
         await target_afp.open()
 
-    state_file = f"siaslice-download-{pendulum.now().strftime('%Y%m%d-%H%M')}.dat"
+    state_file = f"siaslice-download-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
     async with aiofile.AIOFile(state_file, mode='wb') as state_afp:
         async for status in siapath_download(storage, target_afp,
                                              start_block=start_block):
