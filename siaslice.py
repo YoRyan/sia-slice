@@ -328,8 +328,9 @@ async def siapath_mirror(storage, source_afp, start_block=0):
         nonlocal status, current_index
         linear_index = start_block
         while True:
-            reupload = next((index for index, bf in storage.block_files.items()
-                             if bf.partial or bf.stalled), None)
+            reupload = next(
+                (index for index, bf in storage.block_files.items()
+                 if index < linear_index and (bf.partial or bf.stalled)), None)
             if reupload is not None:
                 index = reupload
             else:
