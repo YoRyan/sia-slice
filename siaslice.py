@@ -30,7 +30,8 @@ import aiohttp
 BLOCK_MB = 100
 TRANSFER_STALLED_MIN = 3*60
 
-OpStatus = namedtuple('OpStatus', ['transfers', 'current_index', 'last_index'])
+OpStatus = namedtuple('OpStatus', ['transfers', 'current_index',
+                                   'last_index', 'block_size'])
 
 class SiadError(Exception):
     def __init__(self, status, fields):
@@ -366,8 +367,9 @@ async def siapath_mirror(storage, source_afp, start_block=0):
     async with status:
         while not read_task.done():
             await status.wait()
-            yield OpStatus(transfers=transfers, last_index=last_block,
-                           current_index=current_index)
+            yield OpStatus(
+                transfers=transfers, last_index=last_block,
+                current_index=current_index, block_size=storage.block_size)
     await read_task
     await watch_task
 
@@ -478,13 +480,19 @@ async def siapath_download(storage, target_afp, start_block=0):
         while not download_task.done():
             await status.wait()
             yield OpStatus(transfers=transfers, current_index=current_index,
-                           last_index=len(storage.block_files) - 1)
+                           last_index=len(storage.block_files) - 1,
+                           block_size=storage.block_size)
     await wait_task
 
 
 def format_bs(block_size):
     n = int(block_size/1e3/1e3)
-    return f'{n}MiB'
+    if n >= 10*1000*1000:
+        return f'{round(n/1000/1000, 3)}TiB'
+    if n >= 10*1000:
+        return f'{round(n/1000, 3)}GiB'
+    else:
+        return f'{n}MiB'
 
 def format_sp(siapath): return '/'.join(siapath)
 
@@ -500,10 +508,11 @@ def show_curses_status(stdscr, status, title=''):
     lines, cols = stdscr.getmaxyx()
     curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
+    filepos = format_bs(status.current_index*status.block_size)
     if status.last_index > 0:
-        blocks = f'block {status.current_index} / {status.last_index}'
+        blocks = f'block {status.current_index} / {status.last_index} ({filepos})'
     else:
-        blocks = f'block {status.current_index}'
+        blocks = f'block {status.current_index} ({filepos})'
     stdscr.addstr(0, 0, ' '*cols, curses.color_pair(1))
     stdscr.addstr(0, 0, title[:cols], curses.color_pair(1))
     stdscr.addstr(0, max(cols - len(blocks) - 1, 0), ' ' + blocks,
