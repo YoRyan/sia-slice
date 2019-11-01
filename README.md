@@ -32,7 +32,7 @@ The author uses Sia Slice weekly to mirror his Btrfs backup drive.
 ### Installation
 
 ```
-pip install https://github.com/YoRyan/nuxhash
+pip install https://github.com/YoRyan/sia-slice
 ```
 
 ### Usage
@@ -74,7 +74,8 @@ siaslice --resume siaslice-mirror-20191024-1522.dat
 ### Notes
 
 Sia is an emerging technology, and I jumped through a lot of hoops to write this
-software. For the curious, I (will soon write) a companion blog post.
+software. For the curious, I have written a companion
+[blog post](https://youngryan.com/2019/10/introducing-sia-slice-my-absurdly-cheap-block-storage-solution/).
 
 For contributors and forkers, some tests are located in tests/.
 ```
