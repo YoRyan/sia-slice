@@ -8,6 +8,7 @@ __author__ = 'Ryan Young'
 __contact__ = 'ryan@youngryan.com'
 __copyright__ = 'Copyright 2019'
 __license__ = 'MIT'
+__version__ = '1.0'
 
 
 import asyncio
@@ -223,7 +224,9 @@ class SiapathStorage():
 
 def main():
     argp = ArgumentParser(
-            description='Sync a large file to Sia with incremental updates.')
+        description='Sync a large file to Sia with incremental updates.')
+    argp.add_argument(
+        '-v', '--version', action='version', version=f'%(prog)s {__version__}')
     argp.add_argument('-a', '--api', default='http://localhost:9980',
                       help=('the HTTP endpoint to communicate with Sia '
                             "(default: 'http://localhost:9980')"))
