@@ -499,7 +499,16 @@ def format_sp(siapath): return '/'.join(siapath)
 
 def show_status(stdscr, status, title=''):
     if stdscr is None:
-        print(f'{title}: {status}')
+        from json import dump as jdump
+        from sys import stdout
+
+        jtransfers = [{'block': key, 'progress': value}
+                      for key, value in sorted(status.transfers.items())]
+        jdump({'title': title,
+               'current_index': status.current_index,
+               'last_index': status.last_index,
+               'transfers': jtransfers}, stdout)
+        print()
     else:
         show_curses_status(stdscr, status, title=title)
 
