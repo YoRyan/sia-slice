@@ -127,7 +127,7 @@ class SiadSession():
             raise ValueError(f'invalid sia timestamp: {ts}')
         tz_s = 1 if match.group(8) == '+' else -1
         tz = timezone(timedelta(hours=tz_s*int(match.group(9)),
-                                minutes=int(match.group(10))))
+                                minutes=tz_s*int(match.group(10))))
         return datetime(int(match.group(1)), # year
                         int(match.group(2)), # month
                         int(match.group(3)), # day
