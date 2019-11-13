@@ -197,13 +197,18 @@ class SiapathStorage():
         if index in self.block_files:
             siapath = self.block_files[index].siapath
             await self._session.post(b'', 'renter', 'delete', *siapath)
+        else:
+            raise FileNotFoundError
         await self.update()
 
     async def upload(self, index, md5_hash, data, overwrite=False):
         filename = f'siaslice.{format_bs(self.block_size)}.{index}.{md5_hash}.lz'
         if index in self.block_files:
             if overwrite:
-                await self.delete(index)
+                try:
+                    await self.delete(index)
+                except FileNotFoundError:
+                    pass
             else:
                 raise FileExistsError
         await self._session.upload(self._siapath + (filename,), data)
