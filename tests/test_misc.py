@@ -39,6 +39,17 @@ class TestGenerators(asynctest.TestCase):
                              in ss.region_read(afp, 0, 40*1000*1000)])
         self.assertEqual(read, reference)
 
+    async def test_is_zeroes(self):
+        async with AIOFile('40MiBempty.img', mode='rb') as afp:
+            self.assertTrue(await ss.is_zeroes(ss.region_read(afp, 0, 40*1000*1000)))
+
+    async def test_is_not_zeroes(self):
+        async def agen(gen):
+            for x in gen:
+                yield x
+        chunks = [b'\0\0\0\0', b'\0\0\0\0', b'\0\0\0X', b'\0\0\0\0']
+        self.assertFalse(await ss.is_zeroes(agen(iter(chunks))))
+
     async def test_md5_hasher(self):
         async with AIOFile('40MiBempty.img', mode='rb') as afp:
             reference = md5(await afp.read()).hexdigest()

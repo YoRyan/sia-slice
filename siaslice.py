@@ -331,14 +331,23 @@ async def siapath_mirror(storage, source_afp, start_block=0):
             if eof:
                 break
 
-            md5_hash = await md5_hasher(
-                region_read(source_afp, pos, storage.block_size))
-            block_file = storage.block_files.get(index, None)
-            if (block_file is None or block_file.md5_hash != md5_hash
-                    or block_file.partial or block_file.stalled):
-                data = lzma_compress(
-                    region_read(source_afp, pos, storage.block_size))
-                await storage.upload(index, md5_hash, data, overwrite=True)
+            def region_agen(): return region_read(source_afp, pos,
+                                                  storage.block_size)
+            if is_zeroes(region_agen()):
+                try:
+                    await storage.delete(index)
+                except FileNotFoundError:
+                    pass
+            else:
+                md5_hash = await md5_hasher(region_agen())
+                block_file = storage.block_files.get(index, None)
+                if (block_file is None
+                        or block_file.md5_hash != md5_hash
+                        or block_file.partial
+                        or block_file.stalled):
+                    await storage.upload(
+                        index, md5_hash, lzma_compress(region_agen()),
+                        overwrite=True)
 
     async def schedule_reads():
         nonlocal status, current_index
@@ -410,6 +419,13 @@ async def region_read(afp, start, max_length, readsize=DEFAULT_BUFFER_SIZE):
             ptr += len(chunk)
         else:
             break
+
+
+async def is_zeroes(abytesgen):
+    async for chunk in abytesgen:
+        if chunk.count(0) != len(chunk):
+            return False
+    return True
 
 
 async def md5_hasher(adata):
