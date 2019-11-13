@@ -6,7 +6,7 @@ is storing a long-term, low-cost disk image, with periodic updates, for backups
 and archives on The Cloud™.
 
 The basic idea behind Sia Slice is to chop up a single block device (or other
-large, monolithic file) into thousands of 100MiB chunks, LZMA-compress those
+large, monolithic file) into thousands of 80MiB chunks, LZMA-compress those
 chunks, and then upload them to Sia. That way, the next time you sync, you only
 have to upload the chunks that have changed since the last sync. Sync operations
 always construct a complete and identical mirror; there is no history, and there

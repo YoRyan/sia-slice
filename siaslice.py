@@ -28,7 +28,7 @@ import aiofile
 import aiohttp
 
 
-BLOCK_MB = 100
+DEFAULT_BLOCK_MB = 80
 TRANSFER_STALLED_MIN = 3*60
 
 OpStatus = namedtuple('OpStatus', ['transfers', 'current_index',
@@ -142,7 +142,8 @@ class SiapathStorage():
     _BlockFile = namedtuple('_BlockFile', ['siapath', 'md5_hash', 'size', 'partial',
                                            'complete', 'stalled', 'upload_progress'])
 
-    def __init__(self, session, *siapath, default_block_size=BLOCK_MB*1000*1000):
+    def __init__(self, session, *siapath,
+                 default_block_size=DEFAULT_BLOCK_MB*1000*1000):
         self._session = session
         self._siapath = siapath
         self.block_size = default_block_size
@@ -239,7 +240,7 @@ def main():
     argp_op = argp.add_mutually_exclusive_group(required=True)
     argp_op.add_argument('-m', '--mirror', action='store_true',
                          help=('sync a copy to Sia by dividing the file into '
-                               f'{BLOCK_MB}MiB chunks'))
+                               f'{DEFAULT_BLOCK_MB}MiB chunks'))
     argp_op.add_argument('-d', '--download', action='store_true',
                          help='reconstruct a copy using Sia')
     argp_op.add_argument(
