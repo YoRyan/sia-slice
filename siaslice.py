@@ -228,6 +228,17 @@ def main():
         description='Sync a large file to Sia with incremental updates.')
     argp.add_argument(
         '-v', '--version', action='version', version=f'%(prog)s {__version__}')
+    argp_op = argp.add_mutually_exclusive_group(required=True)
+    argp_op.add_argument('-m', '--mirror', action='store_true',
+                         help='sync a copy to Sia')
+    argp_op.add_argument('-d', '--download', action='store_true',
+                         help='reconstruct a copy using Sia')
+    argp_op.add_argument(
+        '-r', '--resume', action='store_true',
+        help='resume a stalled operation with the provided state file')
+    argp.add_argument('-b', '--block', default=f'{DEFAULT_BLOCK_MB}', type=int,
+                      help=('set block size in MiB for initial sync (not applicable '
+                            f'to other operations; default: {DEFAULT_BLOCK_MB})'))
     argp.add_argument('-a', '--api', default='http://localhost:9980',
                       help=('the HTTP endpoint to communicate with Sia '
                             "(default: 'http://localhost:9980')"))
@@ -237,15 +248,6 @@ def main():
                             "(default: read from $SIA_API_PASSWORD)"))
     argp.add_argument('-t', '--text', action='store_true',
                       help='don\'t display the curses interface')
-    argp_op = argp.add_mutually_exclusive_group(required=True)
-    argp_op.add_argument('-m', '--mirror', action='store_true',
-                         help=('sync a copy to Sia by dividing the file into '
-                               f'{DEFAULT_BLOCK_MB}MiB chunks'))
-    argp_op.add_argument('-d', '--download', action='store_true',
-                         help='reconstruct a copy using Sia')
-    argp_op.add_argument(
-        '-r', '--resume', action='store_true',
-        help='resume a stalled operation with the provided state file')
     argp.add_argument('file', help=('file target for uploads, source for '
                                     'downloads, or state to resume from'))
     argp.add_argument(
@@ -270,7 +272,8 @@ async def amain(args, stdscr=None):
                 raise ValueError(f'invalid siapath: {args.siapath}')
             return tuple(args.siapath.split('/'))
         if args.mirror:
-            await do_mirror(session, args.file, await siapath(), stdscr=stdscr)
+            await do_mirror(session, args.file, await siapath(),
+                            block_size=args.block*1000*1000, stdscr=stdscr)
         elif args.download:
             await do_download(session, args.file, await siapath(), stdscr=stdscr)
         elif args.resume:
@@ -279,7 +282,8 @@ async def amain(args, stdscr=None):
             if 'siaslice-mirror' in args.file:
                 await do_mirror(
                     session, state_pickle['source_file'], state_pickle['siapath'],
-                    start_block=state_pickle['current_index'], stdscr=stdscr)
+                    start_block=state_pickle['current_index'],
+                    block_size=state_pickle['block_size'], stdscr=stdscr)
             elif 'siaslice-download' in args.file:
                 await do_download(
                     session, state_pickle['target_file'], state_pickle['siapath'],
@@ -288,8 +292,9 @@ async def amain(args, stdscr=None):
                 raise ValueError(f'bad state file: {args.file}')
 
 
-async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
-    storage = SiapathStorage(session, *siapath)
+async def do_mirror(session, source_file, siapath, start_block=0,
+                    block_size=DEFAULT_BLOCK_MB*1000*1000, stdscr=None):
+    storage = SiapathStorage(session, *siapath, default_block_size=block_size)
     await storage.update()
 
     state_file = f"siaslice-mirror-{datetime.now().strftime('%Y%m%d-%H%M')}.dat"
@@ -300,6 +305,7 @@ async def do_mirror(session, source_file, siapath, start_block=0, stdscr=None):
             await state_afp.write(pickle.dumps({
                 'source_file': source_file,
                 'siapath': siapath,
+                'block_size': block_size,
                 'current_index': status.current_index}))
             await state_afp.fsync()
             show_status(stdscr, status,
