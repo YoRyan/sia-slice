@@ -334,7 +334,7 @@ async def siapath_mirror(storage, source_afp, start_block=0):
 
             def region_agen(): return region_read(source_afp, pos,
                                                   storage.block_size)
-            if is_zeroes(region_agen()):
+            if await is_zeroes(region_agen()):
                 try:
                     await storage.delete(index)
                 except FileNotFoundError:
