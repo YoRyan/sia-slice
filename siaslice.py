@@ -191,6 +191,7 @@ class SiapathStorage():
                 stalled=((not siafile['available'] or file_partial)
                          and file_age/timedelta(minutes=1) >= TRANSFER_STALLED_MIN),
                 upload_progress=siafile['uploadprogress']/100.0)
+        self.block_size = block_size
         self.block_files = block_files
 
     async def delete(self, index):
