@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import md5
 from io import DEFAULT_BUFFER_SIZE
 from lzma import LZMACompressor, LZMADecompressor
+from sys import stderr
 from types import AsyncGeneratorType, GeneratorType
 
 import aiofile
@@ -52,10 +53,11 @@ class SiadSession():
     MAX_CONCURRENT_UPLOADS = 1
     MAX_CONCURRENT_DOWNLOADS = 10
 
-    def __init__(self, domain, api_password):
+    def __init__(self, domain, api_password, debug=False):
         self._client = None
         self._domain = domain
         self._api_password = api_password
+        self._debug = debug
         self._upload_sem = asyncio.BoundedSemaphore(
             value=SiadSession.MAX_CONCURRENT_UPLOADS)
         self._download_sem = asyncio.BoundedSemaphore(
@@ -76,8 +78,10 @@ class SiadSession():
 
     async def get(self, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        response = await self._client.get(f"{self._domain}/{'/'.join(path)}",
-                                          params=qs, headers=headers)
+        url = f"{self._domain}/{'/'.join(path)}"
+        response = await self._client.get(url, params=qs, headers=headers)
+        if self._debug:
+            print(f'[{response.status}] GET {url}', file=stderr)
         if response.status >= 400 and response.status < 600:
             raise SiadError(response.status, await response.json())
         else:
@@ -85,8 +89,11 @@ class SiadSession():
 
     async def post(self, data, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        response = await self._client.post(f"{self._domain}/{'/'.join(path)}",
-                                           data=data, params=qs, headers=headers)
+        url = f"{self._domain}/{'/'.join(path)}"
+        response = await self._client.post(url, data=data,
+                                           params=qs, headers=headers)
+        if self._debug:
+            print(f'[{response.status}] POST {url}', file=stderr)
         if response.status >= 400 and response.status < 600:
             raise SiadError(response.status, await response.json())
         else:
@@ -254,6 +261,8 @@ def main():
                             "(default: read from $SIA_API_PASSWORD)"))
     argp.add_argument('-t', '--text', action='store_true',
                       help='don\'t display the curses interface')
+    argp.add_argument('--debug', action='store_true',
+                      help='log API calls to stderr')
     argp.add_argument('file', help=('file target for uploads, source for '
                                     'downloads, or state to resume from'))
     argp.add_argument(
@@ -270,7 +279,7 @@ def main():
 
 
 async def amain(args, stdscr=None):
-    async with SiadSession(args.api, args.password) as session:
+    async with SiadSession(args.api, args.password, debug=args.debug) as session:
         async def siapath():
             if not args.siapath:
                 raise ValueError('no siapath specified')
