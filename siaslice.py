@@ -575,10 +575,13 @@ def show_curses_status(stdscr, status, title=''):
     transfers = sorted(status.transfers.items())[-visible_transfers:]
     def progress_bar(y, block, pct):
         bar_size = max(cols - 11 - 4 - 2, 0)
-        n_done = round(pct*bar_size)
+        n_done = max(round(pct*bar_size), 1)
         stdscr.insstr(y, 0, f'{block: 10} ')
         stdscr.insstr(y, 11, f"[{'='*(n_done - 1)}>{' '*(bar_size - n_done)}]")
-        stdscr.insstr(y, cols - 4, f'{round(pct*100.0): 3}%')
+        if pct >= 1.0:
+            stdscr.insstr(y, cols - 4, ' '*4)
+        else:
+            stdscr.insstr(y, cols - 4, f'{round(pct*100.0): 3}%')
     for l in range(1, lines):
         try:
             progress_bar(l, *transfers[l - 1])
