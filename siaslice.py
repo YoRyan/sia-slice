@@ -78,10 +78,10 @@ class SiadSession():
 
     async def get(self, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        url = f"{self._domain}/{'/'.join(path)}"
-        response = await self._client.get(url, params=qs, headers=headers)
+        response = await self._client.get(f"{self._domain}/{'/'.join(path)}",
+                                          params=qs, headers=headers)
         if self._debug:
-            print(f'[{response.status}] GET {url}', file=stderr)
+            print(f"[{response.status}] GET /{'/'.join(path)} {qs}", file=stderr)
         if response.status >= 400 and response.status < 600:
             raise SiadError(response.status, await response.json())
         else:
@@ -89,11 +89,10 @@ class SiadSession():
 
     async def post(self, data, *path, **qs):
         headers = {'User-Agent': SiadSession.USER_AGENT}
-        url = f"{self._domain}/{'/'.join(path)}"
-        response = await self._client.post(url, data=data,
-                                           params=qs, headers=headers)
+        response = await self._client.post(f"{self._domain}/{'/'.join(path)}",
+                                           data=data, params=qs, headers=headers)
         if self._debug:
-            print(f'[{response.status}] POST {url}', file=stderr)
+            print(f"[{response.status}] POST /{'/'.join(path)} {qs}", file=stderr)
         if response.status >= 400 and response.status < 600:
             raise SiadError(response.status, await response.json())
         else:
