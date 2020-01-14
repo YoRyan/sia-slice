@@ -163,7 +163,7 @@ class SiapathStorage():
         else:
             siafiles = (await response.json()).get('files', [])
 
-        block_size = None
+        block_size = self.block_size
         block_files = {}
         now = datetime.now(timezone.utc)
         for siafile in siafiles:
